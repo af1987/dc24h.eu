@@ -1,6 +1,10 @@
 /*
     main.cpp
 
+    v0.0.02:
+        - report dc24h.eu-v0.0.02 startup metadata through version module
+        - start the ADC 1.0.4/TIGR-capable protocol core
+
     v0.0.01:
         - load runtime configuration
         - initialize MariaDB and ADC server

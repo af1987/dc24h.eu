@@ -1,6 +1,10 @@
 /*
     version.cpp
 
+    v0.0.02:
+        - set program version to 0.0.02
+        - set release name to dc24h.eu-v0.0.02
+
     v0.0.01:
         - implement canonical program, release and author metadata
 
@@ -17,11 +21,11 @@ std::string_view program_name() noexcept {
 }
 
 std::string_view version() noexcept {
-    return "0.0.01";
+    return "0.0.02";
 }
 
 std::string_view release_name() noexcept {
-    return "dc24h.eu-v0.0.01";
+    return "dc24h.eu-v0.0.02";
 }
 
 std::string_view project_author() noexcept {
