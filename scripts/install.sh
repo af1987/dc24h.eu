@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # install.sh
 #
+# v0.0.02:
+#   - install libgcrypt20-dev for ADC TIGR PID/CID verification
+#   - run CTest before installing and starting the systemd service
+#
 # v0.0.01:
 #   - install Debian 13 build/runtime dependencies
 #   - configure en_US.UTF-8 locale and MariaDB
@@ -30,6 +34,7 @@ apt-get install -y \
     cmake \
     pkg-config \
     libmariadb-dev \
+    libgcrypt20-dev \
     mariadb-server \
     locales
 
@@ -54,6 +59,7 @@ mariadb dc24h < sql/schema.sql
 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
 cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 cmake --install build
 
 if grep -q '^database_password=CHANGE_ME$' /etc/dc24h.eu/dc24h.conf; then

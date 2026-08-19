@@ -1,6 +1,11 @@
 <!--
 README.md
 
+v0.0.02:
+  - raise project description to dc24h.eu-v0.0.02
+  - document ADC 1.0.4 state validation, TIGR identity and B/D/E/F routing
+  - document new CTest coverage and libgcrypt dependency
+
 v0.0.01:
   - initial project overview
   - document ADC/C++/MariaDB/Debian 13/systemd baseline
@@ -11,25 +16,26 @@ Date: 2026-08-19
 
 # dc24h.eu
 
-`dc24h.eu-v0.0.01` is the initial foundation for a Direct Connect hub using the ADC network protocol.
+`dc24h.eu-v0.0.02` is a C++20 Direct Connect hub foundation implementing the ADC network protocol for Debian 13.
 
 ## Baseline
 
-- Protocol: ADC (BASE foundation)
-- Text encoding: UTF-8
+- Protocol: ADC 1.0.4 BASE profile
+- Session hash in v0.0.02: TIGR (Tiger/192)
+- Text encoding: UTF-8, with ADC escape validation
 - Base language/locale: US English / `en_US.UTF-8`
 - Implementation: C++20
 - Database: MariaDB with `utf8mb4`
 - Operating system: Debian 13
 - Service manager: systemd
 - Default ADC TCP port: 1511
-- Author for this project bootstrap: `gpt-5.6-sol`
-- Project date: `2026-08-19`
+- Author: `gpt-5.6-sol`
+- Project/release date: `2026-08-19`
 
-## v0.0.01 scope
+## v0.0.02 scope
 
-The initial release provides a buildable daemon, TCP listener, ADC SUP/SID/INF startup exchange, UTF-8 validation, SID allocation, basic routing for INF/MSG/SCH/RES traffic, MariaDB event persistence, Debian installation automation, systemd service definition, CI, architecture documentation and ADRs.
+This release adds a stateful ADC login path (`PROTOCOL -> IDENTIFY -> NORMAL`), requires `BASE` and `TIGR` during negotiation, verifies `CID = Tiger(PID)`, removes the private `PD` value before forwarding `BINF`, validates sender SIDs, checks client IPv4 INF values, routes B/D/E/F ADC message types, synchronizes current user INF records for newly identified clients and adds focused protocol/hash tests.
 
-It intentionally does **not** claim full ADC ecosystem compatibility yet. Authentication, permissions enforcement, ADCS/TLS, extension negotiation, anti-flood controls, full ADC state validation and production observability belong to subsequent releases.
+The hub remains an early implementation. Registered-user password verification (`GPA`/`PAS`), operator permissions, bans, ADCS/TLS, IPv6 listening, anti-flood controls, full extension coverage and production observability remain future work.
 
-See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`, and `docs/dc24h.eu-v0.0.01.md`.
+See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`, `docs/dc24h.eu-v0.0.02.md` and `docs/adr/0006-adc-1.0.4-state-tigr.md`.

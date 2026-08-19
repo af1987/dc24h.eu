@@ -1,6 +1,11 @@
 <!--
 instructions.md
 
+v0.0.02:
+  - bind ADC implementation work to the ADC 1.0.4 specification
+  - require protocol/privacy/security changes to include tests and ADR updates
+  - update active release examples to dc24h.eu-v0.0.02
+
 v0.0.01:
   - define mandatory project, versioning, ADR and paired C++ file rules
 
@@ -10,18 +15,30 @@ Date: 2026-08-19
 
 # Engineering instructions
 
-These rules apply to changes after `dc24h.eu-v0.0.01`.
+These rules apply to `dc24h.eu-v0.0.02` and later changes.
 
 ## Mandatory baseline
 
-- Network protocol: ADC.
-- Text encoding: UTF-8.
+- Network protocol: ADC, currently targeted at ADC base specification 1.0.4.
+- Text encoding: UTF-8. Protocol implementations must follow ADC escaping and must not emit invalid UTF-8.
 - Base language: US English.
 - Runtime locale: `en_US.UTF-8`.
 - Implementation language: C++.
 - Database: MariaDB.
 - Target OS: Debian 13.
 - Service manager: systemd.
+- Build system: CMake.
+- C++ standard: C++20 unless changed by ADR.
+
+## Protocol rules
+
+- Treat socket input as untrusted.
+- Respect the ADC state machine and message header syntax.
+- Never forward client PID (`PD`) to other clients.
+- Validate sender SID against the connection before routing B/D/E/F traffic.
+- Keep the selected session hash stable for the connection.
+- Any new ADC extension must document its feature FOURCC, supported commands/states and security implications.
+- A change affecting ADC wire compatibility must add or update protocol tests.
 
 ## File history rule
 
@@ -31,11 +48,14 @@ For C++ use a valid C/C++ block comment, for Markdown use an HTML comment, and f
 
 ## C++ pair rule
 
-Creating a `*.cpp` file requires creating the matching `*.hpp` file in the same change. Creating a `*.hpp` file requires creating the matching `*.cpp` file. Keep matching basenames, for example `adc.cpp` + `adc.hpp`.
+Creating a `*.cpp` file requires creating the matching `*.hpp` file in the same change. Creating a `*.hpp` file requires creating the matching `*.cpp` file. Keep matching basenames, for example `hash.cpp` + `hash.hpp`.
+
+The rule applies to production and test C++ files.
 
 ## Version rule
 
 A user-visible functional change must:
+
 1. raise the program version;
 2. update `src/version.cpp`;
 3. update `VERSION`;
@@ -49,6 +69,15 @@ A user-visible functional change must:
 A change that alters architecture, protocol strategy, concurrency, persistence, deployment, security boundaries or compatibility policy requires an ADR in `docs/adr/*.md`.
 
 Each ADR contains: Title, Status, Date, Author, Context, Decision, Consequences and Alternatives considered.
+
+## Validation rule
+
+Before publishing a PR:
+
+- configure with CMake on the Debian 13 dependency set;
+- build with the project warning flags;
+- run CTest;
+- document checks and known limitations in the PR.
 
 ## Pull request rule
 

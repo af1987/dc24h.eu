@@ -1,5 +1,9 @@
 # ci.yml
 #
+# v0.0.02:
+#   - install libgcrypt development package for TIGR
+#   - execute CTest after the Debian 13 build
+#
 # v0.0.01:
 #   - build dc24h.eu in a Debian 13 container
 #
@@ -24,7 +28,7 @@ jobs:
       - name: Install CI prerequisites
         run: |
           apt-get update
-          apt-get install -y git ca-certificates build-essential cmake pkg-config libmariadb-dev
+          apt-get install -y git ca-certificates build-essential cmake pkg-config libmariadb-dev libgcrypt20-dev
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,3 +38,6 @@ jobs:
 
       - name: Build
         run: cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

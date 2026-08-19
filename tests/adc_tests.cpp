@@ -1,0 +1,90 @@
+/*
+    adc_tests.cpp
+
+    v0.0.02:
+        - test ADC Base32 and TIGR PID/CID verification with a fixed vector
+        - test ADC 1.0.4 SUP/SID/INF login state transitions
+        - verify PD removal, I4 correction and direct-message routing
+        - verify sender SID spoofing is rejected
+
+    Author: gpt-5.6-sol
+    Date: 2026-08-19
+*/
+
+#include "adc_tests.hpp"
+
+#include "adc.hpp"
+#include "hash.hpp"
+
+#include <cassert>
+#include <iostream>
+#include <string>
+
+namespace dc24h::tests {
+
+void run_hash_tests() {
+    constexpr std::string_view pid =
+        "AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFY";
+    constexpr std::string_view cid =
+        "W6AIUW3CLDF6OGHNVE4JPDDJ2P74IWRCF2O36TA";
+
+    assert(verify_tiger_pid_cid(pid, cid));
+    assert(tiger_cid_from_pid(pid) == cid);
+    assert(!verify_tiger_pid_cid(pid,
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"));
+}
+
+void run_protocol_tests() {
+    AdcProtocol protocol("dc24h.eu", "Test hub");
+    AdcSession session;
+
+    const auto handshake =
+        protocol.handle_line("HSUP ADBASE ADTIGR",
+                             "AAAB",
+                             "127.0.0.1",
+                             session);
+    assert(session.state == AdcState::identify);
+    assert(handshake.direct_messages.size() == 3U);
+    assert(handshake.direct_messages[0] == "ISUP ADTIGR ADBASE\n");
+    assert(handshake.direct_messages[1] == "ISID AAAB\n");
+
+    const auto identify =
+        protocol.handle_line(
+            "BINF AAAB "
+            "IDW6AIUW3CLDF6OGHNVE4JPDDJ2P74IWRCF2O36TA "
+            "PDAAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFY "
+            "NItester SUBASE,TIGR I40.0.0.0",
+            "AAAB",
+            "127.0.0.1",
+            session);
+    assert(session.state == AdcState::normal);
+    assert(identify.became_normal);
+    assert(identify.inf_update);
+    assert(identify.routed_message.find(" PD") == std::string::npos);
+    assert(identify.routed_message.find("I4127.0.0.1") != std::string::npos);
+
+    const auto direct =
+        protocol.handle_line("DMSG AAAB CCCC hello",
+                             "AAAB",
+                             "127.0.0.1",
+                             session);
+    assert(direct.route_mode == RouteMode::direct);
+    assert(direct.target_sid == "CCCC");
+
+    const auto spoof =
+        protocol.handle_line("BMSG CCCC spoofed",
+                             "AAAB",
+                             "127.0.0.1",
+                             session);
+    assert(spoof.disconnect);
+    assert(!spoof.direct_messages.empty());
+}
+
+}  // namespace dc24h::tests
+
+int main() {
+    dc24h::tests::run_hash_tests();
+    dc24h::tests::run_protocol_tests();
+    std::cout << "dc24h.eu v0.0.02 tests passed\n";
+    return 0;
+}
