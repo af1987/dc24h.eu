@@ -1,0 +1,40 @@
+# dc24h.service
+#
+# v0.0.01:
+#   - initial systemd service for Debian 13
+#   - add restart policy and basic systemd hardening
+#   - set en_US.UTF-8 runtime locale
+#
+# Author: gpt-5.6-sol
+# Date: 2026-08-19
+
+[Unit]
+Description=dc24h.eu Direct Connect ADC Hub v0.0.01
+Documentation=https://github.com/af1987/dc24h.eu
+After=network-online.target mariadb.service
+Wants=network-online.target
+Requires=mariadb.service
+
+[Service]
+Type=simple
+User=dc24h
+Group=dc24h
+Environment=LANG=en_US.UTF-8
+Environment=LC_ALL=en_US.UTF-8
+ExecStart=/usr/local/bin/dc24h.eu /etc/dc24h.eu/dc24h.conf
+Restart=on-failure
+RestartSec=3s
+LimitNOFILE=65536
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

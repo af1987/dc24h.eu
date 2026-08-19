@@ -1,0 +1,36 @@
+# ci.yml
+#
+# v0.0.01:
+#   - build dc24h.eu in a Debian 13 container
+#
+# Author: gpt-5.6-sol
+# Date: 2026-08-19
+
+name: build
+
+on:
+  push:
+    branches:
+      - main
+      - 'agent/**'
+  pull_request:
+
+jobs:
+  debian-13:
+    runs-on: ubuntu-latest
+    container: debian:13
+
+    steps:
+      - name: Install CI prerequisites
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates build-essential cmake pkg-config libmariadb-dev
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
