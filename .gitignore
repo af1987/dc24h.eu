@@ -1,0 +1,19 @@
+# dc24h.eu
+# v0.0.01:
+#   - initial build/output ignore rules
+# Author: gpt-5.6-sol
+# Date: 2026-08-19
+
+/build/
+/cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.obj
+*.a
+*.so
+*.log
+*.pid
+*.swp
+*~
+.env
