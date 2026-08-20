@@ -28,6 +28,7 @@
 #include <charconv>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace dc24h {
 namespace {
