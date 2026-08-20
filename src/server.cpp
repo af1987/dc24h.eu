@@ -1,6 +1,12 @@
 /*
     server.cpp
 
+    v0.0.03:
+        - intercept BMSG !set user-management commands before broadcast
+        - authorize Admin/Master writes on loopback and first local Master bootstrap
+        - return hub-local IMSG command results without exposing passwords
+        - retain per-client remote address for the management trust boundary
+
     v0.0.02:
         - integrate per-connection ADC session state
         - keep merged sanitized INF state for login user-list synchronization
@@ -39,7 +45,10 @@ namespace dc24h {
 Server::Server(const Config& config,
                const AdcProtocol& protocol,
                Database& database)
-    : config_(config), protocol_(protocol), database_(database) {}
+    : config_(config),
+      protocol_(protocol),
+      database_(database),
+      user_commands_(database) {}
 
 Server::~Server() {
     disconnect_all();
@@ -101,6 +110,7 @@ int Server::run(const std::atomic_bool& stop_requested) {
             sid = next_sid();
             ClientInfo client;
             client.sid = sid;
+            client.remote_address = remote_address;
             clients_.emplace(client_fd, std::move(client));
         }
 
@@ -343,6 +353,10 @@ void Server::apply_inf_update(
 }
 
 void Server::route_action(int sender_fd, const AdcAction& action) {
+    if (handle_user_set_command(sender_fd, action)) {
+        return;
+    }
+
     switch (action.route_mode) {
         case RouteMode::none:
             break;
@@ -365,6 +379,159 @@ void Server::route_action(int sender_fd, const AdcAction& action) {
             route_feature(action);
             break;
     }
+}
+
+bool Server::handle_user_set_command(int sender_fd,
+                                     const AdcAction& action) {
+    if (action.route_mode != RouteMode::broadcast) {
+        return false;
+    }
+
+    const auto text = extract_bmsg_text(action.routed_message);
+    if (!text.has_value() || !text->starts_with("!set ")) {
+        return false;
+    }
+
+    std::string encoded_nick;
+    std::string remote_address;
+    {
+        std::lock_guard lock(clients_mutex_);
+        const auto sender = clients_.find(sender_fd);
+        if (sender == clients_.end() || !sender->second.normal) {
+            return true;
+        }
+
+        remote_address = sender->second.remote_address;
+        const auto nick = sender->second.inf_fields.find("NI");
+        if (nick != sender->second.inf_fields.end()) {
+            encoded_nick = nick->second;
+        }
+    }
+
+    const auto nick = decode_adc_value(encoded_nick);
+    if (!nick.has_value() || nick->empty()) {
+        send_all(sender_fd,
+                 "IMSG " +
+                     AdcProtocol::escape_adc(
+                         "[set] rejected: missing account nickname") +
+                     "\n");
+        return true;
+    }
+
+    if (remote_address != "127.0.0.1") {
+        send_all(sender_fd,
+                 "IMSG " +
+                     AdcProtocol::escape_adc(
+                         "[set] rejected: management commands are loopback-only in v0.0.03") +
+                     "\n");
+        return true;
+    }
+
+    try {
+        const auto user_class =
+            database_.user_class_for_username(*nick);
+
+        bool authorized =
+            user_class.has_value() &&
+            (*user_class == UserClass::admin ||
+             *user_class == UserClass::master);
+
+        if (!authorized && !database_.has_any_enabled_users()) {
+            std::string parse_error;
+            const auto bootstrap =
+                UserCommandProcessor::parse(*text, parse_error);
+            authorized =
+                bootstrap.has_value() &&
+                bootstrap->action == UserSetAction::create_user &&
+                bootstrap->user_class == UserClass::master;
+        }
+
+        if (!authorized) {
+            send_all(sender_fd,
+                     "IMSG " +
+                         AdcProtocol::escape_adc(
+                             "[set] rejected: Admin(5) or Master(10) required") +
+                         "\n");
+            return true;
+        }
+
+        const auto result = user_commands_.execute(*text);
+        const std::string response =
+            std::string("[set] ") +
+            (result.success ? "ok: " : "error: ") +
+            result.message;
+        send_all(sender_fd,
+                 "IMSG " + AdcProtocol::escape_adc(response) + "\n");
+    } catch (const std::exception& ex) {
+        send_all(sender_fd,
+                 "IMSG " +
+                     AdcProtocol::escape_adc(
+                         std::string("[set] database error: ") + ex.what()) +
+                     "\n");
+    }
+
+    return true;
+}
+
+std::optional<std::string> Server::extract_bmsg_text(
+    const std::string& message) {
+    if (!message.starts_with("BMSG ")) {
+        return std::nullopt;
+    }
+
+    const auto sender_end = message.find(' ', 5U);
+    if (sender_end == std::string::npos ||
+        sender_end + 1U >= message.size()) {
+        return std::nullopt;
+    }
+
+    auto end = message.find('\n', sender_end + 1U);
+    if (end == std::string::npos) end = message.size();
+
+    const auto flag_separator = message.find(' ', sender_end + 1U);
+    if (flag_separator != std::string::npos &&
+        flag_separator < end) {
+        end = flag_separator;
+    }
+
+    const auto encoded =
+        std::string_view(message).substr(sender_end + 1U,
+                                         end - sender_end - 1U);
+    return decode_adc_value(encoded);
+}
+
+std::optional<std::string> Server::decode_adc_value(
+    std::string_view value) {
+    std::string output;
+    output.reserve(value.size());
+
+    for (std::size_t index = 0; index < value.size(); ++index) {
+        if (value[index] != '\\') {
+            output.push_back(value[index]);
+            continue;
+        }
+
+        if (index + 1U >= value.size()) {
+            return std::nullopt;
+        }
+
+        const char escaped = value[++index];
+        switch (escaped) {
+            case '\\':
+                output.push_back('\\');
+                break;
+            case 's':
+                output.push_back(' ');
+                break;
+            case 'n':
+                output.push_back('\n');
+                break;
+            default:
+                return std::nullopt;
+        }
+    }
+
+    return output;
 }
 
 void Server::broadcast(const std::string& message) {
