@@ -1,18 +1,26 @@
 /*
     version.hpp
 
-    v0.0.03:
-        - raise canonical release metadata to dc24h.eu-v0.0.03
+    - canonical runtime version metadata API
 
-    v0.0.02:
-        - raise canonical release metadata to dc24h.eu-v0.0.02
+        v0.0.04:
+            - raise canonical release metadata to dc24h.eu-v0.0.04
+            - retain author/date accessors for release provenance
 
-    v0.0.01:
-        - add canonical program, release and author metadata
+        v0.0.03:
+            - raise canonical release metadata to dc24h.eu-v0.0.03
+
+        v0.0.02:
+            - raise canonical release metadata to dc24h.eu-v0.0.02
+
+        v0.0.01:
+            - add canonical program, release and author metadata
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-20
 */
+
+// ----------------------------------// DECLARATION //--
 
 #pragma once
 
