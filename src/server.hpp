@@ -1,6 +1,11 @@
 /*
     server.hpp
 
+    v0.0.03:
+        - integrate protected !set user-management commands
+        - retain peer address for command authorization
+        - require Admin/Master plus loopback; allow first local Master bootstrap
+
     v0.0.02:
         - track per-client NORMAL state INF fields and advertised features
         - add ADC B/D/E/F routing helpers and target SID lookup
@@ -20,11 +25,13 @@
 #include "adc.hpp"
 #include "config.hpp"
 #include "database.hpp"
+#include "user_commands.hpp"
 
 #include <atomic>
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -47,6 +54,7 @@ public:
 private:
     struct ClientInfo {
         std::string sid;
+        std::string remote_address;
         bool normal{false};
         std::map<std::string, std::string> inf_fields;
         std::unordered_set<std::string> features;
@@ -62,6 +70,12 @@ private:
         int client_fd,
         const std::vector<std::pair<std::string, std::string>>& fields);
     void route_action(int sender_fd, const AdcAction& action);
+    bool handle_user_set_command(int sender_fd, const AdcAction& action);
+    static std::optional<std::string> extract_bmsg_text(
+        const std::string& message);
+    static std::optional<std::string> decode_adc_value(
+        std::string_view value);
+
     void broadcast(const std::string& message);
     void route_direct(int sender_fd,
                       std::string_view target_sid,
@@ -85,6 +99,7 @@ private:
     const Config& config_;
     const AdcProtocol& protocol_;
     Database& database_;
+    UserCommandProcessor user_commands_;
 
     std::atomic<std::uint32_t> sid_counter_{1};
     std::mutex clients_mutex_;
