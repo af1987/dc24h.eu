@@ -1,6 +1,11 @@
 <!--
 instructions.md
 
+v0.0.03:
+  - raise active release examples to dc24h.eu-v0.0.03
+  - define numeric user class and protected account-command rules
+  - require password hashing and authorization tests for account mutations
+
 v0.0.02:
   - bind ADC implementation work to the ADC 1.0.4 specification
   - require protocol/privacy/security changes to include tests and ADR updates
@@ -15,7 +20,7 @@ Date: 2026-08-19
 
 # Engineering instructions
 
-These rules apply to `dc24h.eu-v0.0.02` and later changes.
+These rules apply to `dc24h.eu-v0.0.03` and later changes.
 
 ## Mandatory baseline
 
@@ -40,6 +45,14 @@ These rules apply to `dc24h.eu-v0.0.02` and later changes.
 - Any new ADC extension must document its feature FOURCC, supported commands/states and security implications.
 - A change affecting ADC wire compatibility must add or update protocol tests.
 
+## Account and user-class rules
+
+The canonical numeric classes are `-1, 0, 1, 2, 3, 4, 5, 10`. Do not silently reinterpret other values.
+
+Account passwords must never be stored in plaintext. New password storage or authentication code requires a security-focused ADR and tests.
+
+Until ADC VERIFY (`GPA`/`PAS`) authenticates registered users, remote nicknames are not sufficient authorization for account mutations. The v0.0.03 `!set` write path stays loopback-only and requires Admin (5) or Master (10), except the explicitly documented first-Master bootstrap when the account table is empty.
+
 ## File history rule
 
 Every human-maintained source, configuration, deployment, SQL and documentation file must contain a file-level history header. The header must include the filename, current project version, a short list of what was added or changed, author and date.
@@ -48,7 +61,7 @@ For C++ use a valid C/C++ block comment, for Markdown use an HTML comment, and f
 
 ## C++ pair rule
 
-Creating a `*.cpp` file requires creating the matching `*.hpp` file in the same change. Creating a `*.hpp` file requires creating the matching `*.cpp` file. Keep matching basenames, for example `hash.cpp` + `hash.hpp`.
+Creating a `*.cpp` file requires creating the matching `*.hpp` file in the same change. Creating a `*.hpp` file requires creating the matching `*.cpp` file. Keep matching basenames.
 
 The rule applies to production and test C++ files.
 

@@ -1,5 +1,10 @@
 # CMakeLists.txt
 #
+# v0.0.03:
+#   - add user class and protected !set command modules
+#   - add account command/password tests
+#   - link new tests with MariaDB and libgcrypt
+#
 # v0.0.02:
 #   - add libgcrypt TIGER1 dependency for ADC TIGR session hashing
 #   - add hash.cpp/hash.hpp to the daemon
@@ -45,6 +50,10 @@ add_executable(dc24h.eu
     src/database.hpp
     src/hash.cpp
     src/hash.hpp
+    src/user.cpp
+    src/user.hpp
+    src/user_commands.cpp
+    src/user_commands.hpp
     src/adc.cpp
     src/adc.hpp
     src/server.cpp
@@ -75,6 +84,26 @@ if(BUILD_TESTING)
     target_link_libraries(dc24h_tests PRIVATE PkgConfig::GCRYPT)
     target_compile_options(dc24h_tests PRIVATE ${DC24H_WARNING_FLAGS})
     add_test(NAME adc_protocol_and_tigr COMMAND dc24h_tests)
+
+    add_executable(dc24h_user_tests
+        tests/user_commands_tests.cpp
+        tests/user_commands_tests.hpp
+        src/config.hpp
+        src/database.cpp
+        src/database.hpp
+        src/user.cpp
+        src/user.hpp
+        src/user_commands.cpp
+        src/user_commands.hpp
+    )
+    target_include_directories(dc24h_user_tests PRIVATE src tests)
+    target_link_libraries(dc24h_user_tests PRIVATE
+        PkgConfig::MARIADB
+        PkgConfig::GCRYPT
+        Threads::Threads
+    )
+    target_compile_options(dc24h_user_tests PRIVATE ${DC24H_WARNING_FLAGS})
+    add_test(NAME user_classes_and_set_commands COMMAND dc24h_user_tests)
 endif()
 
 install(TARGETS dc24h.eu RUNTIME DESTINATION bin)

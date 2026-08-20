@@ -1,6 +1,9 @@
 /*
     version.hpp
 
+    v0.0.03:
+        - raise canonical release metadata to dc24h.eu-v0.0.03
+
     v0.0.02:
         - raise canonical release metadata to dc24h.eu-v0.0.02
 
