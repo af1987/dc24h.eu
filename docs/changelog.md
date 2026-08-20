@@ -1,6 +1,9 @@
 <!--
 changelog.md
 
+v0.0.03:
+  - add dc24h.eu-v0.0.03 user-class and account-command release
+
 v0.0.02:
   - add dc24h.eu-v0.0.02 protocol hardening release
 
@@ -12,6 +15,39 @@ Date: 2026-08-19
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.03 — 2026-08-19
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- Numeric account classes: `-1, 0, 1, 2, 3, 4, 5, 10`.
+- `src/user.cpp` / `src/user.hpp` with canonical class mapping and PBKDF2-HMAC-SHA256 password hashing.
+- `src/user_commands.cpp` / `src/user_commands.hpp` with `!set key.user.*` parser/executor.
+- `!set key.user.new.username.class.password=[username.class.password]`.
+- `!set key.user.change.id.password=[id.password]`.
+- `!set key.user.new.id.password=[id.password]` compatibility alias.
+- MariaDB account creation, password change by database ID and class lookup methods.
+- Local first-Master bootstrap when there are no enabled accounts.
+- `tests/user_commands_tests.cpp` / `tests/user_commands_tests.hpp`.
+- ADR-0007 for user classes, password storage and the temporary management trust boundary.
+
+### Changed
+
+- Raised canonical program/release version to `0.0.03` / `dc24h.eu-v0.0.03`.
+- `accounts` now has signed `user_class SMALLINT`; legacy `role` remains for migration compatibility.
+- `Server` intercepts supported `BMSG !set` commands before broadcast and replies with hub-local `IMSG`.
+- Account-changing `!set` commands require IPv4 loopback and an enabled Admin (5) or Master (10) account after bootstrap.
+- systemd description and current documentation now report v0.0.03.
+- CMake/CTest includes user-command and password-hash regression coverage.
+
+### Security
+
+- Plaintext account passwords are not persisted.
+- Passwords are encoded as salted PBKDF2-HMAC-SHA256 with 210000 iterations.
+- Password-bearing commands are not broadcast to other hub users.
+- Remote ADC nicknames are not accepted as proof of authorization while `GPA`/`PAS` remains unimplemented.
 
 ## dc24h.eu-v0.0.02 — 2026-08-19
 
