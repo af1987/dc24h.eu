@@ -1,5 +1,10 @@
 -- schema.sql
 --
+-- v0.0.04:
+--   - allow NULL password_hash for accounts created without a password
+--   - preserve conditional password assignment semantics for new.id.password
+--   - keep numeric user_class index and supported class set
+--
 -- v0.0.03:
 --   - add numeric user_class values to accounts
 --   - preserve legacy role column for migration compatibility
@@ -10,7 +15,7 @@
 --   - add accounts, settings and connection event tables
 --
 -- Author: gpt-5.6-sol
--- Date: 2026-08-19
+-- Date: 2026-08-20
 
 CREATE DATABASE IF NOT EXISTS dc24h
     CHARACTER SET utf8mb4
@@ -31,7 +36,7 @@ CREATE TABLE IF NOT EXISTS connection_events (
 CREATE TABLE IF NOT EXISTS accounts (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     nick VARCHAR(64) NOT NULL UNIQUE,
-    password_hash VARCHAR(255) NOT NULL,
+    password_hash VARCHAR(255) NULL,
     role ENUM('user','operator','admin') NOT NULL DEFAULT 'user',
     user_class SMALLINT NOT NULL DEFAULT 0,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -43,6 +48,9 @@ CREATE TABLE IF NOT EXISTS accounts (
 
 ALTER TABLE accounts
     ADD COLUMN IF NOT EXISTS user_class SMALLINT NOT NULL DEFAULT 0;
+
+ALTER TABLE accounts
+    MODIFY COLUMN password_hash VARCHAR(255) NULL;
 
 CREATE TABLE IF NOT EXISTS settings (
     setting_key VARCHAR(128) NOT NULL PRIMARY KEY,

@@ -1,5 +1,9 @@
 # CMakeLists.txt
 #
+# v0.0.04:
+#   - raise CMake project version to 0.0.04
+#   - retain user/password command and MariaDB test targets
+#
 # v0.0.03:
 #   - add user class and protected !set command modules
 #   - add account command/password tests
@@ -16,11 +20,11 @@
 #   - install binary, example configuration and systemd unit
 #
 # Author: gpt-5.6-sol
-# Date: 2026-08-19
+# Date: 2026-08-20
 
 cmake_minimum_required(VERSION 3.25)
 
-project(dc24h LANGUAGES CXX)
+project(dc24h VERSION 0.0.04 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

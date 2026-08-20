@@ -1,19 +1,28 @@
 /*
     database.cpp
 
-    v0.0.03:
-        - extend accounts with validated numeric user_class values
-        - add account creation and password changes by database id
-        - add class lookup and empty-account bootstrap check for protected !set commands
+    - MariaDB persistence implementation
 
-    v0.0.01:
-        - connect to MariaDB using utf8mb4
-        - create initial operational tables
-        - record connect/disconnect events with escaped values
+        v0.0.04:
+            - make account password_hash nullable for passwordless registrations
+            - add conditional password insertion that never overwrites an existing password
+            - add enabled-user listing filtered by numeric class
+
+        v0.0.03:
+            - extend accounts with validated numeric user_class values
+            - add account creation and password changes by database id
+            - add class lookup and empty-account bootstrap check for protected !set commands
+
+        v0.0.01:
+            - connect to MariaDB using utf8mb4
+            - create initial operational tables
+            - record connect/disconnect events with escaped values
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-20
 */
+
+// ----------------------------------// DECLARATION //--
 
 #include "database.hpp"
 
@@ -83,7 +92,7 @@ void Database::initialize_schema() {
         "CREATE TABLE IF NOT EXISTS accounts ("
         "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,"
         "nick VARCHAR(64) NOT NULL UNIQUE,"
-        "password_hash VARCHAR(255) NOT NULL,"
+        "password_hash VARCHAR(255) NULL,"
         "role ENUM('user','operator','admin') NOT NULL DEFAULT 'user',"
         "user_class SMALLINT NOT NULL DEFAULT 0,"
         "enabled BOOLEAN NOT NULL DEFAULT TRUE,"
@@ -94,6 +103,10 @@ void Database::initialize_schema() {
     execute_locked(
         "ALTER TABLE accounts "
         "ADD COLUMN IF NOT EXISTS user_class SMALLINT NOT NULL DEFAULT 0");
+
+    execute_locked(
+        "ALTER TABLE accounts "
+        "MODIFY COLUMN password_hash VARCHAR(255) NULL");
 
     execute_locked(
         "CREATE TABLE IF NOT EXISTS settings ("
@@ -120,8 +133,7 @@ void Database::record_event(std::string_view sid,
 std::uint64_t Database::create_user(std::string_view username,
                                     UserClass user_class,
                                     std::string_view password_hash) {
-    const auto class_value =
-        static_cast<std::int16_t>(user_class);
+    const auto class_value = static_cast<std::int16_t>(user_class);
     if (!is_valid_user_class(class_value)) {
         throw std::invalid_argument("invalid user class");
     }
@@ -134,6 +146,35 @@ std::uint64_t Database::create_user(std::string_view username,
             connection_,
             ("INSERT INTO accounts(nick,password_hash,user_class,enabled) "
              "VALUES('" + username_sql + "','" + password_sql + "'," +
+             std::to_string(class_value) + ",TRUE)")
+                .c_str()) != 0) {
+        const auto error_number = mysql_errno(connection_);
+        if (error_number == 1062U) {
+            throw std::runtime_error("username already exists");
+        }
+        throw std::runtime_error(
+            "MariaDB query failed: " +
+            std::string(mysql_error(connection_)));
+    }
+
+    return static_cast<std::uint64_t>(mysql_insert_id(connection_));
+}
+
+std::uint64_t Database::create_user_without_password(
+    std::string_view username,
+    UserClass user_class) {
+    const auto class_value = static_cast<std::int16_t>(user_class);
+    if (!is_valid_user_class(class_value)) {
+        throw std::invalid_argument("invalid user class");
+    }
+
+    std::lock_guard lock(mutex_);
+    const auto username_sql = escape_locked(username);
+
+    if (mysql_query(
+            connection_,
+            ("INSERT INTO accounts(nick,password_hash,user_class,enabled) "
+             "VALUES('" + username_sql + "',NULL," +
              std::to_string(class_value) + ",TRUE)")
                 .c_str()) != 0) {
         const auto error_number = mysql_errno(connection_);
@@ -161,6 +202,88 @@ bool Database::update_user_password_by_id(
         "' WHERE id=" + std::to_string(user_id) + " AND enabled=TRUE");
 
     return mysql_affected_rows(connection_) == 1;
+}
+
+AddPasswordResult Database::add_user_password_if_missing(
+    std::uint64_t user_id,
+    std::string_view password_hash) {
+    if (user_id == 0U) return AddPasswordResult::user_not_found;
+
+    std::lock_guard lock(mutex_);
+    const auto password_sql = escape_locked(password_hash);
+
+    execute_locked(
+        "UPDATE accounts SET password_hash='" + password_sql +
+        "' WHERE id=" + std::to_string(user_id) +
+        " AND enabled=TRUE AND (password_hash IS NULL OR password_hash='')");
+
+    if (mysql_affected_rows(connection_) == 1) {
+        return AddPasswordResult::added;
+    }
+
+    execute_locked(
+        "SELECT password_hash FROM accounts WHERE id=" +
+        std::to_string(user_id) + " AND enabled=TRUE LIMIT 1");
+
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) {
+        if (mysql_field_count(connection_) == 0U) {
+            return AddPasswordResult::user_not_found;
+        }
+        throw std::runtime_error(
+            "MariaDB result failed: " +
+            std::string(mysql_error(connection_)));
+    }
+
+    MYSQL_ROW row = mysql_fetch_row(result);
+    if (row == nullptr) {
+        mysql_free_result(result);
+        return AddPasswordResult::user_not_found;
+    }
+
+    mysql_free_result(result);
+    return AddPasswordResult::already_set;
+}
+
+std::vector<UserListEntry> Database::users_by_class(UserClass user_class) {
+    const auto class_value = static_cast<std::int16_t>(user_class);
+    if (!is_valid_user_class(class_value)) {
+        throw std::invalid_argument("invalid user class");
+    }
+
+    std::lock_guard lock(mutex_);
+    execute_locked(
+        "SELECT id,nick FROM accounts WHERE user_class=" +
+        std::to_string(class_value) + " AND enabled=TRUE ORDER BY id");
+
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) {
+        throw std::runtime_error(
+            "MariaDB result failed: " +
+            std::string(mysql_error(connection_)));
+    }
+
+    std::vector<UserListEntry> users;
+    while (MYSQL_ROW row = mysql_fetch_row(result)) {
+        if (row[0] == nullptr || row[1] == nullptr) continue;
+
+        std::uint64_t id = 0;
+        try {
+            id = static_cast<std::uint64_t>(std::stoull(row[0]));
+        } catch (...) {
+            mysql_free_result(result);
+            throw std::runtime_error("invalid account id stored in database");
+        }
+
+        users.push_back(UserListEntry{
+            id,
+            std::string(row[1]),
+            user_class
+        });
+    }
+
+    mysql_free_result(result);
+    return users;
 }
 
 std::optional<UserClass> Database::user_class_for_username(
@@ -203,12 +326,12 @@ std::optional<UserClass> Database::user_class_for_username(
         throw std::runtime_error("user_class is outside SMALLINT range");
     }
 
-    const auto user_class =
+    const auto result_class =
         user_class_from_int(static_cast<std::int16_t>(parsed));
-    if (!user_class.has_value()) {
+    if (!result_class.has_value()) {
         throw std::runtime_error("unsupported user_class stored in database");
     }
-    return user_class;
+    return result_class;
 }
 
 bool Database::has_any_enabled_users() {

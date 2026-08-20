@@ -1,15 +1,24 @@
 /*
     user_commands_tests.cpp
 
-    v0.0.03:
-        - test all supported numeric user classes
-        - test new-user and password-change !set key parsing
-        - test password values containing dots
-        - test PBKDF2 password hash verification
+    - user command and password helper regression tests
+
+        v0.0.04:
+            - test passwordless user registration parsing
+            - verify new.id.password is distinct from change.id.password
+            - test user-list-by-class command parsing
+
+        v0.0.03:
+            - test all supported numeric user classes
+            - test new-user and password-change !set key parsing
+            - test password values containing dots
+            - test PBKDF2 password hash verification
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-20
 */
+
+// ----------------------------------// DECLARATION //--
 
 #include "user_commands_tests.hpp"
 
@@ -45,6 +54,17 @@ void run_user_command_tests() {
     assert(create->user_class == UserClass::operator_user);
     assert(create->password == "Strong.pass123");
 
+    const auto create_without_password =
+        UserCommandProcessor::parse(
+            "!set key.user.new.username.class=[bob.1]",
+            error);
+    assert(create_without_password.has_value());
+    assert(create_without_password->action ==
+           UserSetAction::create_user_without_password);
+    assert(create_without_password->username == "bob");
+    assert(create_without_password->user_class == UserClass::registered);
+    assert(create_without_password->password.empty());
+
     const auto change =
         UserCommandProcessor::parse(
             "!set key.user.change.id.password=[5.New.pass123]",
@@ -54,13 +74,29 @@ void run_user_command_tests() {
     assert(change->user_id == 5U);
     assert(change->password == "New.pass123");
 
-    const auto alias =
+    const auto add =
         UserCommandProcessor::parse(
             "!set key.user.new.id.password=[5.Other.pass123]",
             error);
-    assert(alias.has_value());
-    assert(alias->action == UserSetAction::change_password_by_id);
-    assert(alias->user_id == 5U);
+    assert(add.has_value());
+    assert(add->action == UserSetAction::add_password_by_id);
+    assert(add->user_id == 5U);
+    assert(add->password == "Other.pass123");
+
+    const auto list =
+        UserCommandProcessor::parse(
+            "!set key.user.info.userlist.class=[3]",
+            error);
+    assert(list.has_value());
+    assert(list->action == UserSetAction::list_users_by_class);
+    assert(list->user_class == UserClass::operator_user);
+
+    const auto hublist =
+        UserCommandProcessor::parse(
+            "!set key.user.info.userlist.class=[-1]",
+            error);
+    assert(hublist.has_value());
+    assert(hublist->user_class == UserClass::hublist_pinger);
 
     const auto invalid_class =
         UserCommandProcessor::parse(

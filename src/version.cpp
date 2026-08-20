@@ -1,21 +1,30 @@
 /*
     version.cpp
 
-    v0.0.03:
-        - set program version to 0.0.03
-        - set release name to dc24h.eu-v0.0.03
-        - retain project author/date metadata requested for this release
+    - canonical runtime version metadata
 
-    v0.0.02:
-        - set program version to 0.0.02
-        - set release name to dc24h.eu-v0.0.02
+        v0.0.04:
+            - set program version to 0.0.04
+            - set release name to dc24h.eu-v0.0.04
+            - set project author/date metadata to gpt-5.6-sol / 2026-08-20
 
-    v0.0.01:
-        - implement canonical program, release and author metadata
+        v0.0.03:
+            - set program version to 0.0.03
+            - set release name to dc24h.eu-v0.0.03
+            - retain project author/date metadata requested for this release
+
+        v0.0.02:
+            - set program version to 0.0.02
+            - set release name to dc24h.eu-v0.0.02
+
+        v0.0.01:
+            - implement canonical program, release and author metadata
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-20
 */
+
+// ----------------------------------// DECLARATION //--
 
 #include "version.hpp"
 
@@ -26,11 +35,11 @@ std::string_view program_name() noexcept {
 }
 
 std::string_view version() noexcept {
-    return "0.0.03";
+    return "0.0.04";
 }
 
 std::string_view release_name() noexcept {
-    return "dc24h.eu-v0.0.03";
+    return "dc24h.eu-v0.0.04";
 }
 
 std::string_view project_author() noexcept {
@@ -38,7 +47,7 @@ std::string_view project_author() noexcept {
 }
 
 std::string_view project_date() noexcept {
-    return "2026-08-19";
+    return "2026-08-20";
 }
 
 }  // namespace dc24h

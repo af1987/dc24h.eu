@@ -1,15 +1,25 @@
 /*
     user_commands.cpp
 
-    v0.0.03:
-        - parse !set key.user.new.username.class.password
-        - parse !set key.user.change.id.password and legacy new.id.password alias
-        - validate usernames, numeric IDs and user classes before database writes
-        - hash passwords before persistence
+    - hub-local user management command parser and executor
+
+        v0.0.04:
+            - add key.user.new.username.class for passwordless account creation
+            - make key.user.new.id.password add a password only when none exists
+            - keep key.user.change.id.password as the only password replacement command
+            - add key.user.info.userlist.class for private class-filtered user lists
+
+        v0.0.03:
+            - parse !set key.user.new.username.class.password
+            - parse !set key.user.change.id.password and legacy new.id.password alias
+            - validate usernames, numeric IDs and user classes before database writes
+            - hash passwords before persistence
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-20
 */
+
+// ----------------------------------// DECLARATION //--
 
 #include "user_commands.hpp"
 
@@ -18,16 +28,21 @@
 #include <charconv>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace dc24h {
 namespace {
 
-constexpr std::string_view create_prefix =
+constexpr std::string_view create_with_password_prefix =
     "!set key.user.new.username.class.password=[";
-constexpr std::string_view change_prefix =
-    "!set key.user.change.id.password=[";
-constexpr std::string_view change_alias_prefix =
+constexpr std::string_view create_without_password_prefix =
+    "!set key.user.new.username.class=[";
+constexpr std::string_view add_password_prefix =
     "!set key.user.new.id.password=[";
+constexpr std::string_view change_password_prefix =
+    "!set key.user.change.id.password=[";
+constexpr std::string_view list_by_class_prefix =
+    "!set key.user.info.userlist.class=[";
 
 bool unwrap(std::string_view command,
             std::string_view prefix,
@@ -92,6 +107,111 @@ bool valid_password(std::string_view password) noexcept {
     return true;
 }
 
+std::optional<UserSetCommand> parse_create_with_password(
+    std::string_view payload,
+    std::string& error) {
+    const auto first_dot = payload.find('.');
+    const auto second_dot =
+        first_dot == std::string_view::npos
+            ? std::string_view::npos
+            : payload.find('.', first_dot + 1U);
+
+    if (first_dot == std::string_view::npos ||
+        second_dot == std::string_view::npos) {
+        error = "expected [username.class.password]";
+        return std::nullopt;
+    }
+
+    const auto username = payload.substr(0, first_dot);
+    const auto class_text =
+        payload.substr(first_dot + 1U, second_dot - first_dot - 1U);
+    const auto password = payload.substr(second_dot + 1U);
+
+    if (!valid_username(username)) {
+        error = "invalid username";
+        return std::nullopt;
+    }
+
+    const auto class_value = parse_class(class_text);
+    if (!class_value.has_value() || !is_valid_user_class(*class_value)) {
+        error = "invalid user class";
+        return std::nullopt;
+    }
+
+    if (!valid_password(password)) {
+        error = "password must be 8-1024 printable UTF-8 bytes";
+        return std::nullopt;
+    }
+
+    UserSetCommand parsed;
+    parsed.action = UserSetAction::create_user;
+    parsed.username = std::string(username);
+    parsed.user_class = *user_class_from_int(*class_value);
+    parsed.password = std::string(password);
+    return parsed;
+}
+
+std::optional<UserSetCommand> parse_create_without_password(
+    std::string_view payload,
+    std::string& error) {
+    const auto dot = payload.find('.');
+    if (dot == std::string_view::npos ||
+        payload.find('.', dot + 1U) != std::string_view::npos) {
+        error = "expected [username.class]";
+        return std::nullopt;
+    }
+
+    const auto username = payload.substr(0, dot);
+    const auto class_text = payload.substr(dot + 1U);
+
+    if (!valid_username(username)) {
+        error = "invalid username";
+        return std::nullopt;
+    }
+
+    const auto class_value = parse_class(class_text);
+    if (!class_value.has_value() || !is_valid_user_class(*class_value)) {
+        error = "invalid user class";
+        return std::nullopt;
+    }
+
+    UserSetCommand parsed;
+    parsed.action = UserSetAction::create_user_without_password;
+    parsed.username = std::string(username);
+    parsed.user_class = *user_class_from_int(*class_value);
+    return parsed;
+}
+
+std::optional<UserSetCommand> parse_id_password(
+    std::string_view payload,
+    UserSetAction action,
+    std::string& error) {
+    const auto dot = payload.find('.');
+    if (dot == std::string_view::npos) {
+        error = "expected [id.password]";
+        return std::nullopt;
+    }
+
+    const auto id_text = payload.substr(0, dot);
+    const auto password = payload.substr(dot + 1U);
+    const auto user_id = parse_id(id_text);
+
+    if (!user_id.has_value()) {
+        error = "invalid account id";
+        return std::nullopt;
+    }
+    if (!valid_password(password)) {
+        error = "password must be 8-1024 printable UTF-8 bytes";
+        return std::nullopt;
+    }
+
+    UserSetCommand parsed;
+    parsed.action = action;
+    parsed.user_id = *user_id;
+    parsed.password = std::string(password);
+    return parsed;
+}
+
 }  // namespace
 
 UserCommandProcessor::UserCommandProcessor(Database& database)
@@ -103,78 +223,36 @@ std::optional<UserSetCommand> UserCommandProcessor::parse(
     error.clear();
     std::string_view payload;
 
-    if (unwrap(command, create_prefix, payload)) {
-        const auto first_dot = payload.find('.');
-        const auto second_dot =
-            first_dot == std::string_view::npos
-                ? std::string_view::npos
-                : payload.find('.', first_dot + 1U);
+    if (unwrap(command, create_with_password_prefix, payload)) {
+        return parse_create_with_password(payload, error);
+    }
 
-        if (first_dot == std::string_view::npos ||
-            second_dot == std::string_view::npos) {
-            error = "expected [username.class.password]";
-            return std::nullopt;
-        }
+    if (unwrap(command, create_without_password_prefix, payload)) {
+        return parse_create_without_password(payload, error);
+    }
 
-        const auto username = payload.substr(0, first_dot);
-        const auto class_text =
-            payload.substr(first_dot + 1U,
-                           second_dot - first_dot - 1U);
-        const auto password = payload.substr(second_dot + 1U);
+    if (unwrap(command, add_password_prefix, payload)) {
+        return parse_id_password(payload,
+                                 UserSetAction::add_password_by_id,
+                                 error);
+    }
 
-        if (!valid_username(username)) {
-            error = "invalid username";
-            return std::nullopt;
-        }
+    if (unwrap(command, change_password_prefix, payload)) {
+        return parse_id_password(payload,
+                                 UserSetAction::change_password_by_id,
+                                 error);
+    }
 
-        const auto class_value = parse_class(class_text);
-        if (!class_value.has_value() ||
-            !is_valid_user_class(*class_value)) {
+    if (unwrap(command, list_by_class_prefix, payload)) {
+        const auto class_value = parse_class(payload);
+        if (!class_value.has_value() || !is_valid_user_class(*class_value)) {
             error = "invalid user class";
             return std::nullopt;
         }
 
-        if (!valid_password(password)) {
-            error = "password must be 8-1024 printable UTF-8 bytes";
-            return std::nullopt;
-        }
-
         UserSetCommand parsed;
-        parsed.action = UserSetAction::create_user;
-        parsed.username = std::string(username);
+        parsed.action = UserSetAction::list_users_by_class;
         parsed.user_class = *user_class_from_int(*class_value);
-        parsed.password = std::string(password);
-        return parsed;
-    }
-
-    const bool is_change = unwrap(command, change_prefix, payload);
-    const bool is_alias =
-        !is_change && unwrap(command, change_alias_prefix, payload);
-
-    if (is_change || is_alias) {
-        const auto dot = payload.find('.');
-        if (dot == std::string_view::npos) {
-            error = "expected [id.password]";
-            return std::nullopt;
-        }
-
-        const auto id_text = payload.substr(0, dot);
-        const auto password = payload.substr(dot + 1U);
-        const auto user_id = parse_id(id_text);
-
-        if (!user_id.has_value()) {
-            error = "invalid account id";
-            return std::nullopt;
-        }
-        if (!valid_password(password)) {
-            error = "password must be 8-1024 printable UTF-8 bytes";
-            return std::nullopt;
-        }
-
-        UserSetCommand parsed;
-        parsed.action = UserSetAction::change_password_by_id;
-        parsed.user_id = *user_id;
-        parsed.password = std::string(password);
         return parsed;
     }
 
@@ -190,33 +268,90 @@ UserSetResult UserCommandProcessor::execute(std::string_view command) {
     }
 
     try {
-        const auto password_hash = hash_password(parsed->password);
-
         if (parsed->action == UserSetAction::create_user) {
-            const auto id =
-                database_.create_user(parsed->username,
-                                      parsed->user_class,
-                                      password_hash);
+            const auto password_hash = hash_password(parsed->password);
+            const auto id = database_.create_user(parsed->username,
+                                                  parsed->user_class,
+                                                  password_hash);
             return {
                 true,
                 "user created: id=" + std::to_string(id) +
                     " username=" + parsed->username +
                     " class=" +
-                    std::to_string(
-                        static_cast<std::int16_t>(parsed->user_class))
+                    std::to_string(static_cast<std::int16_t>(parsed->user_class))
             };
         }
 
-        if (!database_.update_user_password_by_id(parsed->user_id,
-                                                  password_hash)) {
+        if (parsed->action == UserSetAction::create_user_without_password) {
+            const auto id = database_.create_user_without_password(
+                parsed->username,
+                parsed->user_class);
+            return {
+                true,
+                "user created without password: id=" + std::to_string(id) +
+                    " username=" + parsed->username +
+                    " class=" +
+                    std::to_string(static_cast<std::int16_t>(parsed->user_class))
+            };
+        }
+
+        if (parsed->action == UserSetAction::add_password_by_id) {
+            const auto password_hash = hash_password(parsed->password);
+            const auto result = database_.add_user_password_if_missing(
+                parsed->user_id,
+                password_hash);
+
+            if (result == AddPasswordResult::added) {
+                return {
+                    true,
+                    "password added for id=" + std::to_string(parsed->user_id)
+                };
+            }
+            if (result == AddPasswordResult::already_set) {
+                return {
+                    false,
+                    "password already exists for id=" +
+                        std::to_string(parsed->user_id) +
+                        "; no change made; use key.user.change.id.password to replace it"
+                };
+            }
             return {false, "account id not found"};
         }
 
-        return {
-            true,
-            "password changed for id=" +
-                std::to_string(parsed->user_id)
-        };
+        if (parsed->action == UserSetAction::change_password_by_id) {
+            const auto password_hash = hash_password(parsed->password);
+            if (!database_.update_user_password_by_id(parsed->user_id,
+                                                      password_hash)) {
+                return {false, "account id not found"};
+            }
+
+            return {
+                true,
+                "password changed for id=" + std::to_string(parsed->user_id)
+            };
+        }
+
+        const auto users = database_.users_by_class(parsed->user_class);
+        const auto class_number =
+            static_cast<std::int16_t>(parsed->user_class);
+        std::string message =
+            "user list class=" + std::to_string(class_number) +
+            " (" + std::string(user_class_name(parsed->user_class)) + ")";
+
+        if (users.empty()) {
+            message += ": empty";
+            return {true, std::move(message)};
+        }
+
+        message += ": ";
+        bool first = true;
+        for (const auto& user : users) {
+            if (!first) message += "; ";
+            first = false;
+            message += "id=" + std::to_string(user.id) +
+                       " username=" + user.username;
+        }
+        return {true, std::move(message)};
     } catch (const std::exception& ex) {
         return {false, ex.what()};
     }

@@ -1,6 +1,9 @@
 <!--
 changelog.md
 
+v0.0.04:
+  - add dc24h.eu-v0.0.04 password-lifecycle and user-list release
+
 v0.0.03:
   - add dc24h.eu-v0.0.03 user-class and account-command release
 
@@ -11,10 +14,41 @@ v0.0.01:
   - start release history with dc24h.eu-v0.0.01
 
 Author: gpt-5.6-sol
-Date: 2026-08-19
+Date: 2026-08-20
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.04 — 2026-08-20
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- Passwordless account creation: `!set key.user.new.username.class=[username.class]`.
+- First-password assignment: `!set key.user.new.id.password=[id.password]`.
+- Private class-filtered account query: `!set key.user.info.userlist.class=[class]`.
+- MariaDB `create_user_without_password`, conditional `add_user_password_if_missing`, and `users_by_class` APIs.
+- `AddPasswordResult` and `UserListEntry` database models.
+- Parser regression tests proving that first-password assignment and password replacement are distinct actions.
+- ADR-0008 documenting the password lifecycle and private class-list behavior.
+
+### Changed
+
+- Raised canonical program/release version to `0.0.04` / `dc24h.eu-v0.0.04`.
+- Project author/date metadata now records `gpt-5.6-sol`, `2026-08-20` for this release.
+- `accounts.password_hash` is nullable so an account may exist before its first password is assigned.
+- `key.user.new.id.password` is no longer a compatibility alias for password change.
+- `key.user.change.id.password` is the only command that intentionally replaces an existing password.
+- CMake project version and systemd service description now report v0.0.04.
+- Architecture, engineering instructions, installation guide and documentation index now describe v0.0.04 behavior.
+
+### Security
+
+- `key.user.new.id.password` performs no write when a password already exists and tells the operator to use the explicit change command.
+- Password-bearing commands remain intercepted before broadcast and responses do not echo plaintext passwords.
+- Passwords remain persisted as salted PBKDF2-HMAC-SHA256 hashes.
+- The current management channel remains loopback-only with Admin (5)/Master (10) authorization after first-Master bootstrap.
 
 ## dc24h.eu-v0.0.03 — 2026-08-19
 
@@ -24,30 +58,21 @@ Author: `gpt-5.6-sol`
 
 - Numeric account classes: `-1, 0, 1, 2, 3, 4, 5, 10`.
 - `src/user.cpp` / `src/user.hpp` with canonical class mapping and PBKDF2-HMAC-SHA256 password hashing.
-- `src/user_commands.cpp` / `src/user_commands.hpp` with `!set key.user.*` parser/executor.
-- `!set key.user.new.username.class.password=[username.class.password]`.
-- `!set key.user.change.id.password=[id.password]`.
-- `!set key.user.new.id.password=[id.password]` compatibility alias.
-- MariaDB account creation, password change by database ID and class lookup methods.
-- Local first-Master bootstrap when there are no enabled accounts.
-- `tests/user_commands_tests.cpp` / `tests/user_commands_tests.hpp`.
-- ADR-0007 for user classes, password storage and the temporary management trust boundary.
+- `src/user_commands.cpp` / `src/user_commands.hpp` with protected `!set key.user.*` parser/executor.
+- User creation with password and password change by database ID.
+- MariaDB class lookup and empty-account bootstrap support.
+- First local Master bootstrap and ADR-0007.
 
 ### Changed
 
 - Raised canonical program/release version to `0.0.03` / `dc24h.eu-v0.0.03`.
-- `accounts` now has signed `user_class SMALLINT`; legacy `role` remains for migration compatibility.
-- `Server` intercepts supported `BMSG !set` commands before broadcast and replies with hub-local `IMSG`.
-- Account-changing `!set` commands require IPv4 loopback and an enabled Admin (5) or Master (10) account after bootstrap.
-- systemd description and current documentation now report v0.0.03.
-- CMake/CTest includes user-command and password-hash regression coverage.
+- `accounts` gained signed `user_class SMALLINT`; legacy `role` remained for migration compatibility.
+- `Server` began intercepting supported `BMSG !set` commands and returning hub-local `IMSG` responses.
 
 ### Security
 
-- Plaintext account passwords are not persisted.
-- Passwords are encoded as salted PBKDF2-HMAC-SHA256 with 210000 iterations.
-- Password-bearing commands are not broadcast to other hub users.
-- Remote ADC nicknames are not accepted as proof of authorization while `GPA`/`PAS` remains unimplemented.
+- Plaintext passwords are not persisted.
+- Account mutations are loopback-only until registered-user ADC VERIFY exists.
 
 ## dc24h.eu-v0.0.02 — 2026-08-19
 
@@ -56,30 +81,13 @@ Author: `gpt-5.6-sol`
 ### Added
 
 - ADC 1.0.4 connection state tracking for PROTOCOL, IDENTIFY and NORMAL.
-- `TIGR` session-hash negotiation alongside `BASE`.
-- Strict ADC Base32 encode/decode helpers.
-- Tiger/192 PID-to-CID verification through libgcrypt `TIGER1`.
-- B/D/E/F routing with feature filters for F-type traffic.
-- Merged sanitized client INF state and user-list synchronization for newly identified clients.
-- Focused unit tests and CTest integration.
-- ADR-0006 for ADC 1.0.4 state and TIGR policy.
-
-### Changed
-
-- Raised canonical program/release version to `0.0.02` / `dc24h.eu-v0.0.02`.
-- Initial `BINF` now requires the assigned SID plus `ID`, `PD`, `NI` and `SU`.
-- Client `PD` is removed before INF is forwarded.
-- `I40.0.0.0` is replaced with the peer IPv4 address; conflicting explicit IPv4 values are rejected.
-- Sender SID is checked before B/D/E/F routing.
-- CI and Debian installer now install `libgcrypt20-dev` and execute CTest.
-- systemd description now reports v0.0.02.
+- `TIGR` session-hash negotiation, strict ADC Base32 helpers and Tiger/192 PID-to-CID verification through libgcrypt.
+- B/D/E/F routing, sanitized INF state, user-list synchronization, focused unit tests and ADR-0006.
 
 ### Security
 
-- Prevent client SID spoofing in routed messages.
-- Prevent private PID leakage to other clients.
-- Reject malformed ADC escape sequences and malformed message headers.
-- Reject clients without the required ADC BASE/TIGR profile.
+- Prevent sender SID spoofing and PID leakage.
+- Reject malformed ADC escaping, malformed message headers and unsupported BASE/TIGR negotiation.
 
 ## dc24h.eu-v0.0.01 — 2026-08-19
 
@@ -87,16 +95,7 @@ Author: `gpt-5.6-sol`
 
 ### Added
 
-- Initial C++20 project and CMake build.
-- ADC TCP listener with newline framing.
-- ADC SUP/SID/INF handshake foundation.
-- UTF-8 validation and ADC metadata escaping.
-- Four-character, 20-bit Base32 SID allocation.
-- Basic routing for `BINF`, `BMSG`, `BSCH`, `BRES` and `BQUI`.
-- MariaDB connection, `utf8mb4`, initial schema and connection event audit.
-- Debian 13 installer.
-- systemd service with a dedicated account and hardening.
-- US English / `en_US.UTF-8` baseline.
-- GitHub Actions build on a Debian 13 container.
-- Architecture documentation, engineering instructions and ADR set.
-- Per-file change/version headers.
+- Initial C++20/CMake ADC hub project.
+- UTF-8 ADC listener and SID allocation.
+- MariaDB `utf8mb4` schema and connection-event audit.
+- Debian 13 installer, systemd service, US English locale baseline, CI, documentation and ADR set.
