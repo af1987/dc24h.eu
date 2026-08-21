@@ -1,6 +1,11 @@
 /*
     adc.cpp
 
+    v0.0.08:
+        - reject duplicate INF names and post-login identity/share changes
+        - keep CID, nickname and share stable for moderation admission decisions
+        - identify the rejected immutable field in ADC status details
+
     v0.0.06:
         - accept ncdc identification without duplicating BASE/TIGR in BINF SU
         - keep BASE/TIGR negotiation authoritative in the protocol-state SUP
@@ -35,6 +40,7 @@
 #include <optional>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace dc24h {
 namespace {
@@ -152,6 +158,7 @@ bool removes_feature(const std::vector<std::string>& tokens,
 bool parse_named_fields(const std::vector<std::string>& tokens,
                         std::size_t start,
                         Fields& fields) {
+    std::unordered_set<std::string> names;
     for (std::size_t i = start; i < tokens.size(); ++i) {
         const auto& token = tokens[i];
         if (token.size() < 2U ||
@@ -159,6 +166,7 @@ bool parse_named_fields(const std::vector<std::string>& tokens,
             !is_upper_alnum(token[1])) {
             return false;
         }
+        if (!names.emplace(token.substr(0, 2)).second) return false;
         fields.emplace_back(token.substr(0, 2), token.substr(2));
     }
     return true;
@@ -396,10 +404,17 @@ AdcAction AdcProtocol::handle_line(std::string_view line,
             return action;
         }
 
-        if (field_value(fields, "PD").has_value() ||
-            field_value(fields, "ID").has_value()) {
+        std::string immutable_field;
+        for (const std::string_view name : {"NI", "ID", "PD", "SS"}) {
+            if (field_value(fields, name).has_value()) {
+                immutable_field = name;
+                break;
+            }
+        }
+        if (!immutable_field.empty()) {
             action.direct_messages.emplace_back(
-                status("143", "Identity\\sfield\\scannot\\schange", "FBID"));
+                status("143", "Admission\\sfield\\scannot\\schange",
+                       "FB" + immutable_field));
             return action;
         }
 

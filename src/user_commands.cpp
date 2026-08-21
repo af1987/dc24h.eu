@@ -3,6 +3,10 @@
 
     - hub-local user management command parser and executor
 
+        v0.0.08:
+            - parse key.kicks and key.bans operation namespaces
+            - execute symmetric kick/ban listing, detail and soft revocation
+
         v0.0.07:
             - parse persistent hub settings and +regme self-registration
             - parse account IP, email, public-note and kick-message controls
@@ -42,9 +46,11 @@
 #include <arpa/inet.h>
 #include <array>
 #include <charconv>
+#include <ctime>
 #include <limits>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace dc24h {
 namespace {
@@ -111,6 +117,22 @@ constexpr std::string_view hide_kick_prefix =
     "!set key.user.hide.kick.username=[";
 constexpr std::string_view hide_kick_class_prefix =
     "!set key.user.hide.kick.username.class=[";
+constexpr std::string_view kicks_add_prefix =
+    "!set key.kicks.add=[";
+constexpr std::string_view kicks_list_prefix =
+    "!set key.kicks.list=[";
+constexpr std::string_view kicks_remove_prefix =
+    "!set key.kicks.remove=[";
+constexpr std::string_view kicks_info_prefix =
+    "!set key.kicks.info=[";
+constexpr std::string_view bans_add_prefix =
+    "!set key.bans.add=[";
+constexpr std::string_view bans_remove_prefix =
+    "!set key.bans.remove=[";
+constexpr std::string_view bans_info_prefix =
+    "!set key.bans.info=[";
+constexpr std::string_view bans_list_prefix =
+    "!set key.bans.list=[";
 
 struct TimedKeyDefinition {
     std::string_view prefix;
@@ -430,6 +452,114 @@ std::optional<UserSetCommand> parse_timed_policy(
     return parsed;
 }
 
+std::vector<std::string_view> split_moderation_fields(
+    std::string_view payload) {
+    std::vector<std::string_view> fields;
+    std::size_t start = 0;
+    while (start <= payload.size()) {
+        const auto separator = payload.find('|', start);
+        const auto end = separator == std::string_view::npos
+            ? payload.size()
+            : separator;
+        fields.push_back(payload.substr(start, end - start));
+        if (separator == std::string_view::npos) break;
+        start = separator + 1U;
+    }
+    return fields;
+}
+
+std::optional<UserSetCommand> parse_kick_entry(
+    std::string_view payload,
+    std::string& error) {
+    const auto fields = split_moderation_fields(payload);
+    if (fields.size() != 2U && fields.size() != 3U) {
+        error = "expected [nickname|reason] or [nickname|duration|reason]";
+        return std::nullopt;
+    }
+    const auto nickname = normalize_ban_target("nick", fields[0], error);
+    if (!nickname.has_value()) return std::nullopt;
+    const auto reason = fields.back();
+    if (!valid_moderation_reason(reason)) {
+        error = "kick reason must be 1..1000 printable UTF-8 characters without |";
+        return std::nullopt;
+    }
+
+    UserSetCommand parsed;
+    parsed.action = UserSetAction::kick_user;
+    parsed.username = nickname->value;
+    parsed.moderation_reason = std::string(reason);
+    if (fields.size() == 3U) {
+        const auto duration = parse_moderation_duration(fields[1], error);
+        if (!duration.has_value()) return std::nullopt;
+        if (*duration == 0U) {
+            error = "kick duration cannot be permanent";
+            return std::nullopt;
+        }
+        parsed.duration_seconds = *duration;
+    }
+    return parsed;
+}
+
+std::optional<UserSetCommand> parse_ban_entry(
+    std::string_view payload,
+    std::string& error) {
+    const auto fields = split_moderation_fields(payload);
+    if (fields.size() != 4U) {
+        error = "expected [kind|target|duration|reason]";
+        return std::nullopt;
+    }
+    const auto target = normalize_ban_target(fields[0], fields[1], error);
+    if (!target.has_value()) return std::nullopt;
+    const auto duration = parse_moderation_duration(fields[2], error);
+    if (!duration.has_value()) return std::nullopt;
+    if (!valid_moderation_reason(fields[3])) {
+        error = "ban reason must be 1..1000 printable UTF-8 characters without |";
+        return std::nullopt;
+    }
+
+    UserSetCommand parsed;
+    parsed.action = UserSetAction::create_ban;
+    parsed.moderation_target = *target;
+    parsed.duration_seconds = *duration;
+    parsed.moderation_reason = std::string(fields[3]);
+    return parsed;
+}
+
+std::optional<std::uint16_t> parse_list_limit(
+    std::string_view value,
+    std::string& error) {
+    std::uint16_t limit = 0;
+    const auto parsed = std::from_chars(
+        value.data(), value.data() + value.size(), limit);
+    if (value.empty() || parsed.ec != std::errc{} ||
+        parsed.ptr != value.data() + value.size() || limit == 0U ||
+        limit > 50U) {
+        error = "list limit must be 1..50";
+        return std::nullopt;
+    }
+    return limit;
+}
+
+std::string moderation_summary(const ModerationEntry& entry,
+                               std::int64_t now) {
+    const std::string status = entry.revoked_at != 0
+        ? "revoked"
+        : (entry.expires_at != 0 && entry.expires_at <= now
+            ? "expired"
+            : "active");
+    std::string target =
+        std::string(moderation_target_kind_name(entry.target.kind)) + ":" +
+        entry.target.value;
+    if (!entry.target.secondary_value.empty()) {
+        target += ".." + entry.target.secondary_value;
+    }
+    return "id=" + std::to_string(entry.id) + " target=" + target +
+        " expires=" +
+        (entry.expires_at == 0 ? std::string("permanent")
+                               : std::to_string(entry.expires_at)) +
+        " status=" + status;
+}
+
 std::string change_error(AccountChangeResult result) {
     if (result == AccountChangeResult::user_not_found) {
         return "registered username not found";
@@ -529,8 +659,90 @@ std::optional<UserSetCommand> UserCommandProcessor::parse(
     if (unwrap(command, disconnect_prefix, payload)) {
         return parse_username(payload, UserSetAction::disconnect_user, error);
     }
+    if (unwrap(command, kicks_add_prefix, payload)) {
+        return parse_kick_entry(payload, error);
+    }
+    if (unwrap(command, kicks_list_prefix, payload)) {
+        const auto limit = parse_list_limit(payload, error);
+        if (!limit.has_value()) return std::nullopt;
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::list_kicks;
+        parsed.duration_seconds = *limit;
+        return parsed;
+    }
+    if (unwrap(command, kicks_remove_prefix, payload)) {
+        const auto fields = split_moderation_fields(payload);
+        if (fields.size() != 2U || !valid_moderation_reason(fields[1])) {
+            error = "expected [id|reason] with a printable reason";
+            return std::nullopt;
+        }
+        const auto id = parse_id(fields[0]);
+        if (!id.has_value()) {
+            error = "kick ID must be a positive integer";
+            return std::nullopt;
+        }
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::revoke_kick;
+        parsed.moderation_id = *id;
+        parsed.moderation_reason = std::string(fields[1]);
+        return parsed;
+    }
+    if (unwrap(command, kicks_info_prefix, payload)) {
+        const auto id = parse_id(payload);
+        if (!id.has_value()) {
+            error = "kick ID must be a positive integer";
+            return std::nullopt;
+        }
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::show_kick_info;
+        parsed.moderation_id = *id;
+        return parsed;
+    }
+    if (unwrap(command, bans_add_prefix, payload)) {
+        return parse_ban_entry(payload, error);
+    }
+    if (unwrap(command, bans_remove_prefix, payload)) {
+        const auto fields = split_moderation_fields(payload);
+        if (fields.size() != 2U || !valid_moderation_reason(fields[1])) {
+            error = "expected [id|reason] with a printable reason";
+            return std::nullopt;
+        }
+        const auto id = parse_id(fields[0]);
+        if (!id.has_value()) {
+            error = "ban ID must be a positive integer";
+            return std::nullopt;
+        }
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::revoke_ban;
+        parsed.moderation_id = *id;
+        parsed.moderation_reason = std::string(fields[1]);
+        return parsed;
+    }
+    if (unwrap(command, bans_info_prefix, payload)) {
+        const auto id = parse_id(payload);
+        if (!id.has_value()) {
+            error = "ban ID must be a positive integer";
+            return std::nullopt;
+        }
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::show_ban_info;
+        parsed.moderation_id = *id;
+        return parsed;
+    }
+    if (unwrap(command, bans_list_prefix, payload)) {
+        const auto limit = parse_list_limit(payload, error);
+        if (!limit.has_value()) return std::nullopt;
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::list_bans;
+        parsed.duration_seconds = *limit;
+        return parsed;
+    }
     if (unwrap(command, kick_prefix, payload)) {
-        return parse_username(payload, UserSetAction::kick_user, error);
+        auto parsed = parse_username(payload, UserSetAction::kick_user, error);
+        if (parsed.has_value()) {
+            parsed->moderation_reason = "Kick issued without an explicit reason";
+        }
+        return parsed;
     }
     if (unwrap(command, protect_prefix, payload)) {
         return parse_username_class(payload,
@@ -1010,6 +1222,70 @@ UserSetResult UserCommandProcessor::execute(const UserSetCommand& command) {
                     " class=" +
                     std::to_string(static_cast<std::int16_t>(command.user_class))};
             }
+            case UserSetAction::revoke_kick:
+            case UserSetAction::revoke_ban: {
+                if (command.actor_username.empty()) {
+                    return {false, "moderation revocation requires an identified actor"};
+                }
+                const auto action = command.action == UserSetAction::revoke_ban
+                    ? ModerationAction::ban
+                    : ModerationAction::kick;
+                if (!database_.revoke_moderation_entry(
+                        command.moderation_id,
+                        action,
+                        command.actor_username,
+                        command.moderation_reason)) {
+                    return {false, "active " +
+                        std::string(moderation_action_name(action)) +
+                        " entry not found"};
+                }
+                return {true, std::string(moderation_action_name(action)) +
+                    " revoked: id=" +
+                    std::to_string(command.moderation_id)};
+            }
+            case UserSetAction::show_kick_info:
+            case UserSetAction::show_ban_info: {
+                const auto action = command.action == UserSetAction::show_ban_info
+                    ? ModerationAction::ban
+                    : ModerationAction::kick;
+                const auto entry = database_.moderation_entry(
+                    command.moderation_id);
+                if (!entry.has_value() ||
+                    entry->action != action) {
+                    return {false,
+                        std::string(moderation_action_name(action)) +
+                        " entry not found"};
+                }
+                return {true, std::string(moderation_action_name(action)) +
+                    " info: " +
+                    moderation_summary(
+                        *entry, static_cast<std::int64_t>(std::time(nullptr))) +
+                    " created_by=" + entry->created_by +
+                    " created_at=" + std::to_string(entry->created_at) +
+                    " reason=" + entry->reason +
+                    " revoked_by=" +
+                    (entry->revoked_by.empty() ? std::string("<none>")
+                                               : entry->revoked_by) +
+                    " revoke_reason=" +
+                    (entry->revoke_reason.empty() ? std::string("<none>")
+                                                  : entry->revoke_reason)};
+            }
+            case UserSetAction::list_bans:
+            case UserSetAction::list_kicks: {
+                const auto action = command.action == UserSetAction::list_bans
+                    ? ModerationAction::ban
+                    : ModerationAction::kick;
+                const auto entries = database_.moderation_entries(
+                    action, static_cast<std::uint16_t>(command.duration_seconds));
+                std::string message =
+                    std::string(moderation_action_name(action)) + " entries";
+                if (entries.empty()) return {true, message + ": empty"};
+                const auto now = static_cast<std::int64_t>(std::time(nullptr));
+                for (const auto& entry : entries) {
+                    message += "; " + moderation_summary(entry, now);
+                }
+                return {true, std::move(message)};
+            }
             case UserSetAction::set_hub_setting:
                 if (!database_.set_hub_setting(
                         command.setting_key, command.setting_value)) {
@@ -1030,6 +1306,7 @@ bool UserCommandProcessor::requires_live_sessions(
     return action == UserSetAction::change_class_temporarily ||
            action == UserSetAction::disconnect_user ||
            action == UserSetAction::kick_user ||
+           action == UserSetAction::create_ban ||
            action == UserSetAction::show_ip_and_hostname ||
            action == UserSetAction::show_hostname ||
            action == UserSetAction::find_users_by_ip ||

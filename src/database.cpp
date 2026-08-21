@@ -3,6 +3,12 @@
 
     - MariaDB persistence implementation
 
+        v0.0.08:
+            - create and query auditable kick and ban entries
+            - add symmetric soft-revocation and indexed admission matching
+            - seed and cross-validate key.kicks and key.bans
+            - force the MariaDB session to UTC for expiry correctness
+
         v0.0.07:
             - migrate account controls and authentication telemetry
             - seed and load validated hub settings
@@ -43,6 +49,8 @@
 #include "database.hpp"
 
 #include <array>
+#include <charconv>
+#include <ctime>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -59,6 +67,63 @@ bool valid_policy_key(std::string_view key) noexcept {
     }
     return false;
 }
+
+template <typename T>
+T database_number(const char* value, std::string_view field) {
+    if (value == nullptr) {
+        throw std::runtime_error(
+            "NULL moderation field stored for " + std::string(field));
+    }
+    const std::string_view text(value);
+    T parsed{};
+    const auto result = std::from_chars(
+        text.data(), text.data() + text.size(), parsed);
+    if (result.ec != std::errc{} || result.ptr != text.data() + text.size()) {
+        throw std::runtime_error(
+            "invalid moderation field stored for " + std::string(field));
+    }
+    return parsed;
+}
+
+ModerationEntry moderation_entry_from_row(MYSQL_ROW row) {
+    if (row == nullptr) {
+        throw std::runtime_error("missing moderation row");
+    }
+    const auto action = row[1] == nullptr
+        ? std::nullopt
+        : moderation_action_from_name(row[1]);
+    const auto target_kind = row[2] == nullptr
+        ? std::nullopt
+        : moderation_target_kind_from_name(row[2]);
+    if (!action.has_value() || !target_kind.has_value()) {
+        throw std::runtime_error("invalid moderation type stored in database");
+    }
+
+    ModerationEntry entry;
+    entry.id = database_number<std::uint64_t>(row[0], "id");
+    entry.action = *action;
+    entry.target.kind = *target_kind;
+    entry.target.value = row[3] == nullptr ? std::string{} : std::string(row[3]);
+    entry.target.secondary_value =
+        row[4] == nullptr ? std::string{} : std::string(row[4]);
+    entry.reason = row[5] == nullptr ? std::string{} : std::string(row[5]);
+    entry.created_by = row[6] == nullptr ? std::string{} : std::string(row[6]);
+    entry.created_at = database_number<std::int64_t>(row[7], "created_at");
+    entry.expires_at = database_number<std::int64_t>(row[8], "expires_at");
+    entry.revoked_at = database_number<std::int64_t>(row[9], "revoked_at");
+    entry.revoked_by = row[10] == nullptr ? std::string{} : std::string(row[10]);
+    entry.revoke_reason =
+        row[11] == nullptr ? std::string{} : std::string(row[11]);
+    return entry;
+}
+
+constexpr std::string_view moderation_select_columns =
+    "id,action_type,target_type,target_value,secondary_value,reason,created_by,"
+    "CAST(UNIX_TIMESTAMP(created_at) AS SIGNED),"
+    "COALESCE(CAST(UNIX_TIMESTAMP(expires_at) AS SIGNED),0),"
+    "COALESCE(CAST(UNIX_TIMESTAMP(revoked_at) AS SIGNED),0),"
+    "COALESCE(revoked_by,''),"
+    "COALESCE(revoke_reason,'')";
 
 }  // namespace
 
@@ -102,6 +167,7 @@ void Database::connect() {
             "Unable to select utf8mb4: " +
             std::string(mysql_error(connection_)));
     }
+    execute_locked("SET time_zone='+00:00'");
 }
 
 void Database::initialize_schema() {
@@ -217,6 +283,33 @@ void Database::initialize_schema() {
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
     execute_locked(
+        "CREATE TABLE IF NOT EXISTS moderation_entries ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "action_type VARCHAR(8) NOT NULL,"
+        "target_type VARCHAR(16) NOT NULL,"
+        "target_value VARCHAR(255) NOT NULL,"
+        "secondary_value VARCHAR(255) NOT NULL DEFAULT '',"
+        "reason VARCHAR(1000) NOT NULL,"
+        "created_by VARCHAR(64) NOT NULL,"
+        "created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+        "expires_at TIMESTAMP(6) NULL,"
+        "revoked_at TIMESTAMP(6) NULL,"
+        "revoked_by VARCHAR(64) NULL,"
+        "revoke_reason VARCHAR(1000) NULL,"
+        "INDEX idx_moderation_active(revoked_at,expires_at,action_type),"
+        "INDEX idx_moderation_target"
+        "(target_type,target_value,revoked_at,expires_at),"
+        "INDEX idx_moderation_secondary"
+        "(target_type,secondary_value,revoked_at,expires_at),"
+        "INDEX idx_moderation_action(action_type,id),"
+        "CONSTRAINT chk_moderation_action CHECK "
+        "(action_type IN ('kick','ban')),"
+        "CONSTRAINT chk_moderation_target CHECK "
+        "(target_type IN "
+        "('identity','nick','cid','ip','range','prefix','share'))"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    execute_locked(
         "CREATE TABLE IF NOT EXISTS settings ("
         "setting_key VARCHAR(128) NOT NULL PRIMARY KEY,"
         "setting_value TEXT NOT NULL,"
@@ -224,8 +317,10 @@ void Database::initialize_schema() {
         "ON UPDATE CURRENT_TIMESTAMP"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
-    constexpr std::array<std::pair<std::string_view, std::string_view>, 28>
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 30>
         defaults{{
+            {"key.kicks", "300"},
+            {"key.bans", "31536000"},
             {"key.class.permission.register.difference", "2"},
             {"key.class.permission.kick.difference", "0"},
             {"key.class.permission.pm.difference", "10"},
@@ -1114,7 +1209,8 @@ HubSettings Database::hub_settings() {
     std::lock_guard lock(mutex_);
     execute_locked(
         "SELECT setting_key,setting_value FROM settings "
-        "WHERE setting_key LIKE 'key.class.%' "
+        "WHERE setting_key IN ('key.kicks','key.bans') "
+        "OR setting_key LIKE 'key.class.%' "
         "OR setting_key LIKE 'key.nick.%' "
         "OR setting_key LIKE 'key.user.autoreg.%' "
         "OR setting_key='key.user.password.minimum.length' "
@@ -1142,6 +1238,11 @@ HubSettings Database::hub_settings() {
         throw std::runtime_error(
             "nickname minimum length exceeds maximum length");
     }
+    if (settings.kick_rejoin_delay_seconds >
+        settings.maximum_temporary_ban_seconds) {
+        throw std::runtime_error(
+            "kick rejoin delay exceeds temporary ban maximum");
+    }
     return settings;
 }
 
@@ -1157,6 +1258,30 @@ bool Database::set_hub_setting(std::string_view key,
     std::lock_guard lock(mutex_);
     const auto key_sql = escape_locked(canonical_key);
     const auto value_sql = escape_locked(*normalized);
+    if (canonical_key == "key.kicks" || canonical_key == "key.bans") {
+        const std::string other_key = canonical_key == "key.kicks"
+            ? "key.bans"
+            : "key.kicks";
+        execute_locked(
+            "SELECT setting_value FROM settings WHERE setting_key='" +
+            other_key + "' LIMIT 1");
+        MYSQL_RES* result = mysql_store_result(connection_);
+        if (result == nullptr) throw std::runtime_error(
+            "MariaDB result failed: " + std::string(mysql_error(connection_)));
+        const MYSQL_ROW row = mysql_fetch_row(result);
+        if (row != nullptr && row[0] != nullptr) {
+            const auto candidate = static_cast<std::uint64_t>(
+                std::stoull(*normalized));
+            const auto other = static_cast<std::uint64_t>(std::stoull(row[0]));
+            const bool invalid = canonical_key == "key.kicks"
+                ? candidate > other
+                : candidate < other;
+            mysql_free_result(result);
+            if (invalid) return false;
+        } else {
+            mysql_free_result(result);
+        }
+    }
     if (canonical_key == "key.nick.length.minimum" ||
         canonical_key == "key.nick.length.maximum") {
         const std::string other_key =
@@ -1189,6 +1314,209 @@ bool Database::set_hub_setting(std::string_view key,
         "','" + value_sql + "') ON DUPLICATE KEY UPDATE "
         "setting_value=VALUES(setting_value)");
     return true;
+}
+
+std::uint64_t Database::add_moderation_entry(
+    ModerationAction action,
+    const ModerationTarget& target,
+    std::string_view reason,
+    std::string_view created_by,
+    std::uint64_t duration_seconds) {
+    if (!valid_moderation_reason(reason)) {
+        throw std::invalid_argument(
+            "moderation reason must be 1..1000 printable UTF-8 characters");
+    }
+    if (!valid_moderation_nickname(created_by)) {
+        throw std::invalid_argument(
+            "moderation actor must be 1..64 printable UTF-8 characters");
+    }
+    if (target.value.empty() || target.value.size() > 1020U ||
+        target.secondary_value.size() > 1020U) {
+        throw std::invalid_argument("invalid moderation target length");
+    }
+    if ((action == ModerationAction::kick &&
+         target.kind != ModerationTargetKind::identity) ||
+        (action == ModerationAction::ban &&
+         target.kind == ModerationTargetKind::identity)) {
+        throw std::invalid_argument("invalid target kind for moderation action");
+    }
+
+    std::lock_guard lock(mutex_);
+    const auto target_sql = escape_locked(target.value);
+    const auto secondary_sql = escape_locked(target.secondary_value);
+    const auto reason_sql = escape_locked(reason);
+    const auto actor_sql = escape_locked(created_by);
+    const std::string expiry_sql = duration_seconds == 0U
+        ? "NULL"
+        : "DATE_ADD(UTC_TIMESTAMP(6),INTERVAL " +
+            std::to_string(duration_seconds) + " SECOND)";
+
+    execute_locked(
+        "INSERT INTO moderation_entries("
+        "action_type,target_type,target_value,secondary_value,reason,created_by,"
+        "expires_at) VALUES('" +
+        std::string(moderation_action_name(action)) + "','" +
+        std::string(moderation_target_kind_name(target.kind)) + "','" +
+        target_sql + "','" + secondary_sql + "','" + reason_sql + "','" +
+        actor_sql + "'," + expiry_sql + ")");
+    return static_cast<std::uint64_t>(mysql_insert_id(connection_));
+}
+
+std::optional<ModerationEntry> Database::active_moderation_match(
+    std::string_view nickname,
+    std::string_view cid,
+    std::string_view ipv4,
+    std::optional<std::uint64_t> share_size) {
+    std::lock_guard lock(mutex_);
+    std::vector<std::string> target_clauses;
+    std::vector<std::string> identity_clauses;
+    if (!nickname.empty()) {
+        const auto nickname_sql = escape_locked(nickname);
+        target_clauses.push_back(
+            "(target_type='nick' AND target_value='" + nickname_sql + "')");
+        target_clauses.emplace_back("target_type='prefix'");
+        identity_clauses.push_back("target_value='" + nickname_sql + "'");
+    }
+    if (!cid.empty()) {
+        const auto cid_sql = escape_locked(cid);
+        target_clauses.push_back(
+            "(target_type='cid' AND target_value='" + cid_sql + "')");
+        identity_clauses.push_back("secondary_value='" + cid_sql + "'");
+    }
+    if (!identity_clauses.empty()) {
+        std::string identity = "(target_type='identity' AND (";
+        for (std::size_t index = 0; index < identity_clauses.size(); ++index) {
+            if (index != 0U) identity += " OR ";
+            identity += identity_clauses[index];
+        }
+        identity += "))";
+        target_clauses.push_back(std::move(identity));
+    }
+    if (!ipv4.empty()) {
+        const auto ipv4_sql = escape_locked(ipv4);
+        target_clauses.push_back(
+            "(target_type='ip' AND target_value='" + ipv4_sql + "')");
+        target_clauses.emplace_back("target_type='range'");
+    }
+    if (share_size.has_value()) {
+        target_clauses.push_back(
+            "(target_type='share' AND target_value='" +
+            std::to_string(*share_size) + "')");
+    }
+    if (target_clauses.empty()) return std::nullopt;
+
+    std::string target_filter;
+    for (std::size_t index = 0; index < target_clauses.size(); ++index) {
+        if (index != 0U) target_filter += " OR ";
+        target_filter += target_clauses[index];
+    }
+    execute_locked(
+        "SELECT " + std::string(moderation_select_columns) +
+        " FROM moderation_entries WHERE revoked_at IS NULL "
+        "AND (expires_at IS NULL OR expires_at>UTC_TIMESTAMP(6)) "
+        "AND (" + target_filter + ") "
+        "ORDER BY (action_type='ban') DESC,id DESC");
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) {
+        throw std::runtime_error(
+            "MariaDB result failed: " + std::string(mysql_error(connection_)));
+    }
+
+    try {
+        while (MYSQL_ROW row = mysql_fetch_row(result)) {
+            auto entry = moderation_entry_from_row(row);
+            if (moderation_target_matches(
+                    entry.target, nickname, cid, ipv4, share_size)) {
+                mysql_free_result(result);
+                return entry;
+            }
+        }
+    } catch (...) {
+        mysql_free_result(result);
+        throw;
+    }
+    mysql_free_result(result);
+    return std::nullopt;
+}
+
+std::optional<ModerationEntry> Database::moderation_entry(std::uint64_t id) {
+    if (id == 0U) return std::nullopt;
+    std::lock_guard lock(mutex_);
+    execute_locked(
+        "SELECT " + std::string(moderation_select_columns) +
+        " FROM moderation_entries WHERE id=" + std::to_string(id) +
+        " LIMIT 1");
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) {
+        throw std::runtime_error(
+            "MariaDB result failed: " + std::string(mysql_error(connection_)));
+    }
+    const MYSQL_ROW row = mysql_fetch_row(result);
+    if (row == nullptr) {
+        mysql_free_result(result);
+        return std::nullopt;
+    }
+    try {
+        auto entry = moderation_entry_from_row(row);
+        mysql_free_result(result);
+        return entry;
+    } catch (...) {
+        mysql_free_result(result);
+        throw;
+    }
+}
+
+std::vector<ModerationEntry> Database::moderation_entries(
+    ModerationAction action,
+    std::uint16_t limit) {
+    if (limit == 0U || limit > 50U) {
+        throw std::invalid_argument("moderation list limit must be 1..50");
+    }
+    std::lock_guard lock(mutex_);
+    execute_locked(
+        "SELECT " + std::string(moderation_select_columns) +
+        " FROM moderation_entries WHERE action_type='" +
+        std::string(moderation_action_name(action)) +
+        "' ORDER BY id DESC LIMIT " + std::to_string(limit));
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) {
+        throw std::runtime_error(
+            "MariaDB result failed: " + std::string(mysql_error(connection_)));
+    }
+
+    std::vector<ModerationEntry> entries;
+    try {
+        while (MYSQL_ROW row = mysql_fetch_row(result)) {
+            entries.push_back(moderation_entry_from_row(row));
+        }
+    } catch (...) {
+        mysql_free_result(result);
+        throw;
+    }
+    mysql_free_result(result);
+    return entries;
+}
+
+bool Database::revoke_moderation_entry(
+    std::uint64_t id,
+    ModerationAction action,
+    std::string_view revoked_by,
+    std::string_view reason) {
+    if (id == 0U || !valid_moderation_reason(reason) ||
+        !valid_moderation_nickname(revoked_by)) {
+        throw std::invalid_argument("invalid moderation revocation");
+    }
+    std::lock_guard lock(mutex_);
+    const auto actor_sql = escape_locked(revoked_by);
+    const auto reason_sql = escape_locked(reason);
+    execute_locked(
+        "UPDATE moderation_entries SET revoked_at=UTC_TIMESTAMP(6),"
+        "revoked_by='" + actor_sql + "',revoke_reason='" + reason_sql +
+        "' WHERE id=" + std::to_string(id) +
+        " AND action_type='" + std::string(moderation_action_name(action)) +
+        "' AND revoked_at IS NULL "
+        "AND (expires_at IS NULL OR expires_at>UTC_TIMESTAMP(6))");
+    return mysql_affected_rows(connection_) == 1U;
 }
 
 void Database::record_account_login(std::string_view username,

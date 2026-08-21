@@ -1,5 +1,9 @@
 # CMakeLists.txt
 #
+# v0.0.08:
+#   - raise CMake project version to 0.0.08
+#   - add paired moderation module to daemon and user tests
+#
 # v0.0.07:
 #   - raise CMake project version to 0.0.07
 #   - add paired hub-settings module to daemon and user tests
@@ -37,7 +41,7 @@
 
 cmake_minimum_required(VERSION 3.25)
 
-project(dc24h VERSION 0.0.07 LANGUAGES CXX)
+project(dc24h VERSION 0.0.08 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -71,6 +75,8 @@ add_executable(dc24h.eu
     src/user.hpp
     src/hub_settings.cpp
     src/hub_settings.hpp
+    src/moderation.cpp
+    src/moderation.hpp
     src/user_commands.cpp
     src/user_commands.hpp
     src/adc.cpp
@@ -123,6 +129,8 @@ if(BUILD_TESTING)
         src/version.hpp
         src/hub_settings.cpp
         src/hub_settings.hpp
+        src/moderation.cpp
+        src/moderation.hpp
         src/user_commands.cpp
         src/user_commands.hpp
     )

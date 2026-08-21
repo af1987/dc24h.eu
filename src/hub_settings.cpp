@@ -3,6 +3,10 @@
 
     - persistent hub policy validation and nickname checks
 
+        v0.0.08:
+            - validate and apply key.kicks and key.bans duration limits
+            - align admitted nicknames with moderation text validation
+
         v0.0.07:
             - validate every class, nickname and auto-registration key
             - apply normalized MariaDB setting values to runtime policy
@@ -17,6 +21,7 @@
 #include "hub_settings.hpp"
 
 #include "adc.hpp"
+#include "moderation.hpp"
 #include "user.hpp"
 
 #include <algorithm>
@@ -119,6 +124,22 @@ std::optional<std::string> normalize_hub_setting(
     std::string_view value,
     std::string& error) {
     error.clear();
+    if (key == "key.kicks") {
+        const auto parsed = parse_number<std::uint32_t>(value);
+        if (!parsed.has_value() || *parsed < 60U || *parsed > 86400U) {
+            error = "kick rejoin delay must be 60..86400 seconds";
+            return std::nullopt;
+        }
+        return std::to_string(*parsed);
+    }
+    if (key == "key.bans") {
+        const auto parsed = parse_number<std::uint32_t>(value);
+        if (!parsed.has_value() || *parsed < 60U || *parsed > 31536000U) {
+            error = "temporary ban maximum must be 60..31536000 seconds";
+            return std::nullopt;
+        }
+        return std::to_string(*parsed);
+    }
     if (is_difference_key(key)) {
         const auto parsed = parse_number<std::int16_t>(value);
         if (!parsed.has_value() || *parsed < 0 || *parsed > 10) {
@@ -213,7 +234,9 @@ bool apply_hub_setting(HubSettings& settings,
     const auto uint32_value = [&] { return *parse_number<std::uint32_t>(value); };
     const auto uint64_value = [&] { return *parse_number<std::uint64_t>(value); };
 
-    if (key == "key.class.permission.register.difference") settings.register_class_difference = int16_value();
+    if (key == "key.kicks") settings.kick_rejoin_delay_seconds = uint32_value();
+    else if (key == "key.bans") settings.maximum_temporary_ban_seconds = uint32_value();
+    else if (key == "key.class.permission.register.difference") settings.register_class_difference = int16_value();
     else if (key == "key.class.permission.kick.difference") settings.kick_class_difference = int16_value();
     else if (key == "key.class.permission.pm.difference") settings.pm_class_difference = int16_value();
     else if (key == "key.class.permission.download.difference") settings.download_class_difference = int16_value();
@@ -267,6 +290,10 @@ bool nickname_allowed(std::string_view nickname,
     if (length < settings.nick_length_minimum ||
         length > settings.nick_length_maximum) {
         error = "nickname length is outside configured limits";
+        return false;
+    }
+    if (!valid_moderation_nickname(nickname)) {
+        error = "nickname contains a control or reserved character";
         return false;
     }
     if (!settings.nick_characters_allowed.empty()) {

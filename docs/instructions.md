@@ -1,6 +1,10 @@
 <!--
 instructions.md
 
+v0.0.08:
+  - define persistent kick/ban key, target, audit and admission rules
+  - require immutable ADC identity and live ncdc moderation validation
+
 v0.0.07:
   - add policy-key, self-registration and account-metadata rules
   - require paired hub-settings implementation and tests
@@ -35,7 +39,7 @@ Date: 2026-08-21
 
 # Engineering instructions
 
-These rules apply to `dc24h.eu-v0.0.07` and later changes.
+These rules apply to `dc24h.eu-v0.0.08` and later changes.
 
 ## Mandatory baseline
 
@@ -57,6 +61,7 @@ These rules apply to `dc24h.eu-v0.0.07` and later changes.
 - Never forward client PID (`PD`) to other clients.
 - Validate sender SID before routing B/D/E/F traffic.
 - Keep the selected session hash stable for a connection.
+- Reject duplicate named INF fields and post-NORMAL changes to `NI`, `ID`, `PD` or `SS`.
 - Document every new ADC extension, feature FOURCC, supported state and security implication.
 - Wire-compatibility changes require protocol tests.
 - BASE/TIGR are mandatory in SUP negotiation and TIGR PID/CID verification; do not require clients to repeat them in BINF `SU`.
@@ -76,7 +81,7 @@ The command semantics are intentionally non-overlapping:
 - `key.user.change.username.password=[username.password]` replaces an existing password by nickname; an empty password resets it to SQL `NULL`.
 - `+passwd <password>` assigns only a missing password to the current enabled local account and must never overwrite an existing hash.
 - `key.user.info.userlist.class=[class]` returns all registered users in the selected class through the private response; `[]` defaults to class `0`, and enabled/password states are marked.
-- All account, moderation and hub-policy keys use the canonical forms documented in `docs/dc24h.eu-v0.0.07.md`.
+- All account, moderation and hub-policy keys use the canonical forms documented in `docs/dc24h.eu-v0.0.08.md`.
 - Global policy values are validated before storage in MariaDB; unknown keys and malformed values are rejected.
 - `+regme` must enforce configured class, nickname prefix, share and password rules.
 - Passwordless accounts receive a finite first-password deadline.
@@ -88,6 +93,26 @@ The command semantics are intentionally non-overlapping:
 - `gag`, `no_chat`, `no_pm`, `no_search` and `no_download` block the command families defined in ADR-0010.
 - Permanent/timed hidden share must remove BINF `SS`, `SF`, `SL`; hidden operator state clears ADC `CT` bits 4/8/16.
 - Kick protection blocks actor classes less than or equal to its threshold. Non-punitive disconnect is a distinct operation.
+- `key.kicks` is the default punitive-kick rejoin delay in seconds;
+  `key.bans` is the maximum temporary moderation duration. Both are validated
+  before storage and must satisfy `key.kicks <= key.bans`.
+- A punitive kick must persist its nickname/CID audit row before socket
+  shutdown. A database failure must leave the target connected and return an
+  error to the actor.
+- Ban targets must be explicit (`nick`, `cid`, `ip`, `range`, `prefix` or
+  `share`), normalized without user-supplied regular expressions and checked
+  before ADC NORMAL. Address bans are also checked immediately after accept.
+- Moderation reasons are mandatory printable UTF-8 and bounded to 1000 characters.
+  Action, target, actor, creation, expiry and revocation metadata persist in
+  MariaDB. Kick removal and unban are soft revocations and require their own
+  reasons.
+- Expired or revoked entries never deny admission. A failed MariaDB admission
+  lookup fails closed. Ban information and lists remain private.
+- A ban may not include the acting session or bypass existing class/kick
+  protection for a matched online or registered nickname.
+- Permanent bans and every target broader than an exact nickname require
+  Master (10); Admin may create temporary exact-nickname bans within class
+  protection.
 - Delegated registration may create only Regular (0) or Registered (1) accounts.
 - `!opchat` must remain private to Operator+ and active `opchat` grantees.
 
@@ -117,6 +142,10 @@ A user-visible functional change must:
 6. add/update `docs/dc24h.eu-vX.Y.Z.md`;
 7. update affected file-history headers.
 
+`VERSION` is the intentional exception: it remains a single machine-readable
+semantic-version line. Its history and provenance live in `src/version.*`, the
+release manifest and `docs/changelog.md`.
+
 ## ADR rule
 
 Changes to architecture, protocol strategy, concurrency, persistence, deployment, security boundary or compatibility policy require an ADR in `docs/adr/*.md`.
@@ -133,6 +162,10 @@ Before publishing a PR:
 - review the final PR diff for accidental secret/password disclosure;
 - document completed checks and any unverified environment-dependent checks in the PR.
 - run a real ADC connection and public-message echo test with Debian 13 `ncdc` for protocol/session changes.
+- for kick/ban changes, run two isolated `ncdc` clients and verify immediate
+  denial, expiry or soft-unban recovery, and persistence across a hub restart.
+- apply `sql/schema.sql` twice against an isolated MariaDB instance and verify
+  the runtime schema bootstrap represents the same tables, indexes and seeds.
 
 ## Pull request rule
 
