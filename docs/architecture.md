@@ -1,145 +1,96 @@
 <!--
 architecture.md
 
+v0.0.05:
+  - add complete persistent registered-user administration
+  - add restart-scoped class overrides and online IPv4/hostname queries
+  - add password reset/self-service and final-Master protection
+
 v0.0.04:
-  - split first-password assignment from password replacement
-  - allow passwordless account records with nullable password_hash
-  - add private enabled-user listing by numeric class
-  - add ADR-0008 for password lifecycle and user-list behavior
-
-v0.0.03:
-  - add persistent numeric user classes and user command processing
-  - add PBKDF2 password hashing and account mutation APIs
-  - define loopback/Admin-Master management boundary and first-Master bootstrap
-
-v0.0.02:
-  - add ADC 1.0.4 session-state architecture and TIGR identity validation
-
-v0.0.01:
-  - define initial ADC hub architecture, trust boundaries and modules
+  - split first-password assignment from replacement
+  - add passwordless accounts and private class listing
 
 Author: gpt-5.6-sol
 Date: 2026-08-20
 -->
 
-# Architecture — dc24h.eu-v0.0.04
+# Architecture — dc24h.eu-v0.0.05
 
-## Goals
+## Baseline
 
-`dc24h.eu` is a Direct Connect hub implemented in C++20 for ADC on Debian 13. Version `0.0.04` keeps the ADC 1.0.4 BASE/TIGR core and the v0.0.03 numeric account-class model, while making account password lifecycle operations unambiguous and adding a private class-filtered account query.
+`dc24h.eu` is a C++20 Direct Connect hub for Debian 13. It implements the ADC 1.0.4 BASE/TIGR profile, validates UTF-8, stores persistent state in MariaDB `utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd.
 
-## Runtime view
+## Runtime flow
 
-1. systemd starts `/usr/local/bin/dc24h.eu /etc/dc24h.eu/dc24h.conf`.
-2. `main` loads configuration and selects `en_US.UTF-8`.
-3. `Database` connects to MariaDB using `utf8mb4` and ensures `accounts.password_hash` is nullable.
-4. `Server` binds the configured IPv4 ADC endpoint, default `0.0.0.0:1511`.
-5. Each connection receives an ADC SID and owns an `AdcSession`.
-6. `AdcProtocol` validates UTF-8, ADC escaping, session transitions and message routing.
-7. A NORMAL `BMSG` whose decoded text begins with `!set ` is intercepted before broadcast.
-8. The server applies the existing management trust boundary: IPv4 loopback plus enabled Admin (5) or Master (10), except first local Master bootstrap while no enabled account exists.
-9. `UserCommandProcessor` parses the selected `key.user.*` command and validates username, account ID, class and password constraints.
-10. Password-bearing operations hash plaintext in process memory with PBKDF2-HMAC-SHA256 before persistence.
-11. `Database` performs one of four account mutations or the class-filtered query.
-12. A hub-local `IMSG` returns the result to the requesting client. The management command is not broadcast.
+1. systemd starts `/usr/local/bin/dc24h.eu /etc/dc24h.eu/dc24h.conf` after MariaDB.
+2. `main` loads strict `key=value` configuration and selects the US UTF-8 locale.
+3. `Database` connects through MariaDB Connector/C and applies idempotent schema updates.
+4. `Server` listens on IPv4 TCP port 1511 by default and allocates a four-character ADC SID per connection.
+5. `AdcProtocol` validates ADC states, UTF-8/escaping, TIGR PID/CID identity, INF fields and B/D/E/F routing.
+6. NORMAL-state `BMSG` text beginning with `!set ` or `+passwd ` is intercepted before broadcast.
+7. The server validates the loopback and class boundary, then delegates persistent operations to `UserCommandProcessor`/`Database` or evaluates live-session queries itself.
+8. The result is escaped and returned only to the requester as `IMSG`.
 
-## Modules
+## Components
 
-### `src/adc.*`
+- `src/adc.cpp` / `src/adc.hpp`: ADC parsing, state machine and routing decisions.
+- `src/hash.cpp` / `src/hash.hpp`: ADC Base32 and TIGR identity derivation.
+- `src/user.cpp` / `src/user.hpp`: canonical numeric classes and PBKDF2-HMAC-SHA256 passwords.
+- `src/user_commands.cpp` / `src/user_commands.hpp`: complete key grammar, validation and persistent command execution.
+- `src/database.cpp` / `src/database.hpp`: mutex-serialized MariaDB operations and account invariants.
+- `src/server.cpp` / `src/server.hpp`: listener, sessions, private commands, temporary classes, online IPv4 and optional reverse DNS.
+- `src/config.cpp` / `src/config.hpp`: runtime configuration including `dns_lookup=0|1`.
+- `src/version.cpp` / `src/version.hpp`: `0.0.05`, release identity, author and date.
 
-ADC 1.0.4 line validation, state machine, SUP/TIGR negotiation, INF sanitization, sender-SID validation and routing decisions.
+Every production and test `*.cpp` has a matching `*.hpp` and vice versa.
 
-### `src/hash.*`
+## Persistent account model
 
-Strict ADC Base32 helpers and TIGR PID/CID verification.
+`accounts` contains `id`, unique `nick`, nullable `password_hash`, compatibility `role`, signed `user_class`, `enabled`, `created_at` and `updated_at`. Supported classes are `-1, 0, 1, 2, 3, 4, 5, 10`; legacy `role` is not authoritative.
 
-### `src/user.*`
+Passwords use salted PBKDF2-HMAC-SHA256 with 210000 iterations, a 16-byte random salt and a 32-byte derived key. Plaintext passwords and hashes are never returned in command messages. Password-presence information is reported only as `set`/`unset`.
 
-Canonical numeric `UserClass` model and password hashing/verification helpers.
+Removal, disabling and permanent class demotion query the target while holding the database mutex. If the operation would eliminate the final enabled Master (10), it is rejected.
 
-### `src/user_commands.*`
+## Command groups
 
-Parser/executor for protected user-management keys. v0.0.04 introduces distinct actions for account creation with/without a password, adding the first password, replacing a password, and listing users by class.
+### Registration and passwords
 
-### `src/database.*`
+- `key.user.new.username.class.password=[username.class.password]`
+- `key.user.new.username.class=[username.class]`
+- `key.user.new.id.password=[id.password]` — first password only.
+- `key.user.change.id.password=[id.password]` — replacement by ID.
+- `key.user.change.username.password=[username.password]` — replacement by nickname; an empty password resets to `NULL`.
+- `+passwd <password>` — local first-password self-service for the current nickname.
 
-Synchronized MariaDB persistence. v0.0.04 adds passwordless account creation, conditional first-password insertion and class-filtered account listing.
+### Account lifecycle and classes
 
-### `src/server.*`
+- `key.user.remove.username=[username]`
+- `key.user.disable.username=[username]`
+- `key.user.enable.username=[username]`
+- `key.user.change.username.class=[username.class]`
+- `key.user.change.username.class.temp=[username.class]`
 
-TCP listener, connection lifecycle, ADC client state and routing. The existing protected `!set` interception provides the private `IMSG` response channel used by all v0.0.04 user commands.
+The temporary class is held in memory, capped at Admin (5), used as the effective class, and lost on restart.
 
-### `src/version.*`
+### Private information
 
-Canonical runtime source for `0.0.04`, `dc24h.eu-v0.0.04`, author `gpt-5.6-sol` and date `2026-08-20`.
+- `key.user.info.userlist.class=[class]`; `[]` means class 0.
+- `key.user.info.username=[username]`
+- `key.user.info.ip.hostname.username=[username]`
+- `key.user.info.hostname.username=[username]`
+- `key.user.info.userlist.ip=[IPv4]`
+- `key.user.info.userlist.iprange=[start-end]`
+- `key.user.info.userlist.subnet=[network/prefix]`
 
-### `tests/user_commands_tests.*`
-
-Regression coverage for supported classes and parsing distinctions between password creation, first-password assignment, password replacement and class listing.
-
-## User class model
-
-`accounts.user_class` is signed `SMALLINT`. Application-valid values are:
-
-- `-1` Hublist pingers
-- `0` Regular users
-- `1` Registered users
-- `2` VIP users
-- `3` Operator user
-- `4` Cheef user
-- `5` Admin user
-- `10` Master user
-
-The older `accounts.role` column remains for migration compatibility and is not authoritative for management permission checks.
-
-## Management command grammar
-
-Create a user with an initial password:
-
-`!set key.user.new.username.class.password=[username.class.password]`
-
-Create a user without a password:
-
-`!set key.user.new.username.class=[username.class]`
-
-Assign the first password by account database ID:
-
-`!set key.user.new.id.password=[id.password]`
-
-This operation uses a conditional database update and succeeds only when `password_hash` is `NULL` or empty. If a password already exists, the row is left unchanged and the response directs the operator to the change command.
-
-Replace a password by account database ID:
-
-`!set key.user.change.id.password=[id.password]`
-
-List all enabled users for a numeric class:
-
-`!set key.user.info.userlist.class=[class]`
-
-The list result is serialized into the hub-local private response and is not routed to other users.
-
-Passwords may contain additional dots because parsing consumes only the required leading separators.
-
-## Password lifecycle and storage
-
-Plaintext passwords are never persisted. The hash format remains salted PBKDF2-HMAC-SHA256 with 210000 iterations, a 16-byte random salt and 32-byte derived key:
-
-`pbkdf2-sha256$iterations$salt-hex$digest-hex`
-
-A passwordless registration stores `NULL` in `accounts.password_hash`. `key.user.new.id.password` transitions the account from no password to one password exactly once unless an explicit later `key.user.change.id.password` replaces it.
-
-The separation prevents an operator from accidentally using a "new password" command as an implicit password reset.
+Account information comes from MariaDB. IP and hostname information comes only from current sessions. Reverse DNS occurs only when `dns_lookup=1`; otherwise hostname results explicitly report it disabled.
 
 ## Trust boundaries
 
-ADC VERIFY (`GPA`/`PAS`) is not implemented. Therefore a remote nickname is not sufficient proof of account identity. v0.0.04 keeps the protected management path restricted to `127.0.0.1` and an enabled Admin (5) or Master (10) nickname after bootstrap.
+ADC VERIFY (`GPA`/`PAS`) is not implemented in v0.0.05. Therefore all `!set` commands require IPv4 loopback plus an enabled effective Admin (5) or Master (10). The first local Master with an initial password may be created only while no enabled account exists. `+passwd` is also loopback-only and performs a conditional first-password insert, preventing overwrite.
 
-First-Master bootstrap remains available only while the database contains no enabled account and only for creation of a Master account with a password.
+## Concurrency and deployment
 
-## Concurrency
+The hub uses one worker thread per client. `clients_mutex_` protects live ADC state, `temporary_classes_mutex_` protects restart-scoped overrides, and `Database` serializes the MariaDB connection. DNS is executed outside the clients lock. The target deployment is Debian 13 with systemd, MariaDB, libmariadb and libgcrypt.
 
-The one-thread-per-client model remains. `clients_mutex_` protects connection state. `Database` serializes MariaDB Connector/C operations with its mutex. The conditional first-password update and its follow-up account-existence check run while holding that database mutex.
-
-## Deployment
-
-Target OS is Debian 13. systemd remains the service manager. MariaDB and libgcrypt remain required dependencies. UTF-8 storage uses MariaDB `utf8mb4`, while the runtime locale remains US English `en_US.UTF-8`.
+See ADR-0009 for the v0.0.05 decisions and trade-offs.

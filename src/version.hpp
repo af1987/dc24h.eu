@@ -3,6 +3,10 @@
 
     - canonical runtime version metadata API
 
+        v0.0.05:
+            - raise canonical release metadata to dc24h.eu-v0.0.05
+            - retain author/date accessors for release provenance
+
         v0.0.04:
             - raise canonical release metadata to dc24h.eu-v0.0.04
             - retain author/date accessors for release provenance

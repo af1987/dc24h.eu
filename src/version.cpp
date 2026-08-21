@@ -3,6 +3,11 @@
 
     - canonical runtime version metadata
 
+        v0.0.05:
+            - set program version to 0.0.05
+            - set release name to dc24h.eu-v0.0.05
+            - retain gpt-5.6-sol / 2026-08-20 release provenance
+
         v0.0.04:
             - set program version to 0.0.04
             - set release name to dc24h.eu-v0.0.04
@@ -35,11 +40,11 @@ std::string_view program_name() noexcept {
 }
 
 std::string_view version() noexcept {
-    return "0.0.04";
+    return "0.0.05";
 }
 
 std::string_view release_name() noexcept {
-    return "dc24h.eu-v0.0.04";
+    return "dc24h.eu-v0.0.05";
 }
 
 std::string_view project_author() noexcept {

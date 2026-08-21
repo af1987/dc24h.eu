@@ -1,12 +1,15 @@
 /*
     config.hpp
 
+    v0.0.05:
+        - add dns_lookup switch for optional reverse DNS in user queries
+
     v0.0.01:
         - add hub, network, locale and MariaDB configuration model
         - add UTF-8 configuration loader interface
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-20
 */
 
 #pragma once
@@ -23,6 +26,7 @@ struct Config {
     std::uint16_t listen_port{1511};
     std::size_t max_clients{1024};
     std::string locale{"en_US.UTF-8"};
+    bool dns_lookup{false};
 
     std::string database_host{"127.0.0.1"};
     std::uint16_t database_port{3306};

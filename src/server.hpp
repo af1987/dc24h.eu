@@ -1,6 +1,11 @@
 /*
     server.hpp
 
+    v0.0.05:
+        - add private online-user IP, hostname, range and subnet queries
+        - retain temporary class overrides in memory until restart
+        - add loopback-only +passwd first-password self-service
+
     v0.0.03:
         - integrate protected !set user-management commands
         - retain peer address for command authorization
@@ -17,7 +22,7 @@
         - add graceful shutdown contract for systemd SIGTERM
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-20
 */
 
 #pragma once
@@ -71,6 +76,10 @@ private:
         const std::vector<std::pair<std::string, std::string>>& fields);
     void route_action(int sender_fd, const AdcAction& action);
     bool handle_user_set_command(int sender_fd, const AdcAction& action);
+    UserSetResult execute_live_user_command(const UserSetCommand& command);
+    std::optional<UserClass> temporary_class_for(
+        std::string_view username) const;
+    std::string hostname_for_address(std::string_view address) const;
     static std::optional<std::string> extract_bmsg_text(
         const std::string& message);
     static std::optional<std::string> decode_adc_value(
@@ -104,6 +113,9 @@ private:
     std::atomic<std::uint32_t> sid_counter_{1};
     std::mutex clients_mutex_;
     std::unordered_map<int, ClientInfo> clients_;
+
+    mutable std::mutex temporary_classes_mutex_;
+    std::unordered_map<std::string, UserClass> temporary_classes_;
 
     std::mutex workers_mutex_;
     std::vector<std::thread> workers_;

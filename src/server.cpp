@@ -1,6 +1,12 @@
 /*
     server.cpp
 
+    v0.0.05:
+        - execute the complete private key.user administration command set
+        - add online IP/hostname, exact-IP, range and subnet queries
+        - apply in-memory temporary classes with Admin as the maximum
+        - add loopback-only +passwd first-password assignment
+
     v0.0.03:
         - intercept BMSG !set user-management commands before broadcast
         - authorize Admin/Master writes on loopback and first local Master bootstrap
@@ -22,13 +28,14 @@
         - support systemd-friendly graceful shutdown
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-20
 */
 
 #include "server.hpp"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -36,11 +43,25 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <cstring>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 
 namespace dc24h {
+namespace {
+
+std::optional<std::uint32_t> ipv4_host_order(std::string_view text) {
+    in_addr address{};
+    const std::string input(text);
+    if (::inet_pton(AF_INET, input.c_str(), &address) != 1) {
+        return std::nullopt;
+    }
+    return ntohl(address.s_addr);
+}
+
+}  // namespace
 
 Server::Server(const Config& config,
                const AdcProtocol& protocol,
@@ -388,7 +409,8 @@ bool Server::handle_user_set_command(int sender_fd,
     }
 
     const auto text = extract_bmsg_text(action.routed_message);
-    if (!text.has_value() || !text->starts_with("!set ")) {
+    if (!text.has_value() ||
+        (!text->starts_with("!set ") && !text->starts_with("+passwd "))) {
         return false;
     }
 
@@ -422,28 +444,48 @@ bool Server::handle_user_set_command(int sender_fd,
         send_all(sender_fd,
                  "IMSG " +
                      AdcProtocol::escape_adc(
-                         "[set] rejected: management commands are loopback-only in v0.0.03") +
+                         "[user] rejected: management commands are loopback-only in v0.0.05") +
                      "\n");
         return true;
     }
 
     try {
+        std::string parse_error;
+        auto parsed = UserCommandProcessor::parse(*text, parse_error);
+        if (!parsed.has_value()) {
+            send_all(sender_fd,
+                     "IMSG " + AdcProtocol::escape_adc(
+                         "[user] error: " + parse_error) + "\n");
+            return true;
+        }
+
+        if (parsed->action == UserSetAction::self_add_password) {
+            parsed->username = *nick;
+            const auto result = user_commands_.execute(*parsed);
+            const std::string response = std::string("[passwd] ") +
+                (result.success ? "ok: " : "error: ") + result.message;
+            send_all(sender_fd,
+                     "IMSG " + AdcProtocol::escape_adc(response) + "\n");
+            return true;
+        }
+
         const auto user_class =
             database_.user_class_for_username(*nick);
 
-        bool authorized =
-            user_class.has_value() &&
-            (*user_class == UserClass::admin ||
-             *user_class == UserClass::master);
+        const auto temporary_class = temporary_class_for(*nick);
+
+        const auto effective_class = temporary_class.has_value()
+            ? temporary_class
+            : user_class;
+        bool authorized = user_class.has_value() &&
+            effective_class.has_value() &&
+            (*effective_class == UserClass::admin ||
+             *effective_class == UserClass::master);
 
         if (!authorized && !database_.has_any_enabled_users()) {
-            std::string parse_error;
-            const auto bootstrap =
-                UserCommandProcessor::parse(*text, parse_error);
             authorized =
-                bootstrap.has_value() &&
-                bootstrap->action == UserSetAction::create_user &&
-                bootstrap->user_class == UserClass::master;
+                parsed->action == UserSetAction::create_user &&
+                parsed->user_class == UserClass::master;
         }
 
         if (!authorized) {
@@ -455,7 +497,14 @@ bool Server::handle_user_set_command(int sender_fd,
             return true;
         }
 
-        const auto result = user_commands_.execute(*text);
+        const auto result = UserCommandProcessor::requires_live_sessions(
+                                parsed->action)
+            ? execute_live_user_command(*parsed)
+            : user_commands_.execute(*parsed);
+        if (result.success && parsed->action == UserSetAction::remove_user) {
+            std::lock_guard lock(temporary_classes_mutex_);
+            temporary_classes_.erase(parsed->username);
+        }
         const std::string response =
             std::string("[set] ") +
             (result.success ? "ok: " : "error: ") +
@@ -471,6 +520,158 @@ bool Server::handle_user_set_command(int sender_fd,
     }
 
     return true;
+}
+
+UserSetResult Server::execute_live_user_command(
+    const UserSetCommand& command) {
+    if (command.action == UserSetAction::change_class_temporarily) {
+        const auto details = database_.user_details(command.username);
+        if (!details.has_value()) {
+            return {false, "registered username not found"};
+        }
+        if (!details->enabled) {
+            return {false, "registered username is disabled"};
+        }
+        {
+            std::lock_guard lock(temporary_classes_mutex_);
+            temporary_classes_[command.username] = command.user_class;
+        }
+        return {true, "temporary class changed until hub restart: username=" +
+            command.username + " class=" +
+            std::to_string(static_cast<std::int16_t>(command.user_class))};
+    }
+
+    struct OnlineUser {
+        std::string username;
+        std::string address;
+    };
+    std::vector<OnlineUser> users;
+    {
+        std::lock_guard lock(clients_mutex_);
+        for (const auto& [fd, client] : clients_) {
+            static_cast<void>(fd);
+            if (!client.normal) continue;
+            const auto nick_field = client.inf_fields.find("NI");
+            if (nick_field == client.inf_fields.end()) continue;
+            const auto decoded = decode_adc_value(nick_field->second);
+            if (!decoded.has_value() || decoded->empty()) continue;
+            users.push_back({*decoded, client.remote_address});
+        }
+    }
+
+    if (command.action == UserSetAction::show_ip_and_hostname ||
+        command.action == UserSetAction::show_hostname) {
+        const auto found = std::find_if(
+            users.begin(), users.end(), [&](const OnlineUser& user) {
+                return user.username == command.username;
+            });
+        if (found == users.end()) return {false, "user is not online"};
+        const auto hostname = hostname_for_address(found->address);
+        if (command.action == UserSetAction::show_hostname) {
+            return {true, "username=" + found->username +
+                " hostname=" + hostname};
+        }
+        return {true, "username=" + found->username +
+            " ip=" + found->address + " hostname=" + hostname};
+    }
+
+    std::vector<OnlineUser> matches;
+    if (command.action == UserSetAction::find_users_by_ip) {
+        if (!ipv4_host_order(command.query).has_value()) {
+            return {false, "invalid IPv4 address"};
+        }
+        std::copy_if(users.begin(), users.end(), std::back_inserter(matches),
+                     [&](const OnlineUser& user) {
+                         return user.address == command.query;
+                     });
+    } else if (command.action == UserSetAction::find_users_by_ip_range) {
+        const auto separator = command.query.find('-');
+        if (separator == std::string::npos) {
+            return {false, "expected IPv4 range start-end"};
+        }
+        const auto first = ipv4_host_order(
+            std::string_view(command.query).substr(0, separator));
+        const auto last = ipv4_host_order(
+            std::string_view(command.query).substr(separator + 1U));
+        if (!first.has_value() || !last.has_value() || *first > *last) {
+            return {false, "invalid IPv4 range"};
+        }
+        std::copy_if(users.begin(), users.end(), std::back_inserter(matches),
+                     [&](const OnlineUser& user) {
+                         const auto address = ipv4_host_order(user.address);
+                         return address.has_value() && *address >= *first &&
+                                *address <= *last;
+                     });
+    } else if (command.action == UserSetAction::find_users_by_subnet) {
+        const auto separator = command.query.find('/');
+        if (separator == std::string::npos) {
+            return {false, "expected IPv4 subnet address/prefix"};
+        }
+        const auto network = ipv4_host_order(
+            std::string_view(command.query).substr(0, separator));
+        unsigned int prefix = 0;
+        const auto prefix_text =
+            std::string_view(command.query).substr(separator + 1U);
+        const auto parsed = std::from_chars(
+            prefix_text.data(), prefix_text.data() + prefix_text.size(), prefix);
+        if (!network.has_value() || parsed.ec != std::errc{} ||
+            parsed.ptr != prefix_text.data() + prefix_text.size() || prefix > 32U) {
+            return {false, "invalid IPv4 subnet"};
+        }
+        const std::uint32_t mask = prefix == 0U
+            ? 0U
+            : 0xFFFFFFFFU << (32U - prefix);
+        std::copy_if(users.begin(), users.end(), std::back_inserter(matches),
+                     [&](const OnlineUser& user) {
+                         const auto address = ipv4_host_order(user.address);
+                         return address.has_value() &&
+                                ((*address & mask) == (*network & mask));
+                     });
+    } else {
+        return {false, "unsupported live-session query"};
+    }
+
+    std::string response = "online users";
+    if (matches.empty()) return {true, response + ": empty"};
+    response += ": ";
+    bool first = true;
+    for (const auto& user : matches) {
+        if (!first) response += "; ";
+        first = false;
+        response += user.username + "@" + user.address;
+    }
+    return {true, std::move(response)};
+}
+
+std::optional<UserClass> Server::temporary_class_for(
+    std::string_view username) const {
+    std::lock_guard lock(temporary_classes_mutex_);
+    const auto found = temporary_classes_.find(std::string(username));
+    if (found == temporary_classes_.end()) return std::nullopt;
+    return found->second;
+}
+
+std::string Server::hostname_for_address(std::string_view address) const {
+    if (!config_.dns_lookup) return "dns_lookup_disabled";
+
+    sockaddr_in socket_address{};
+    socket_address.sin_family = AF_INET;
+    const std::string address_text(address);
+    if (::inet_pton(AF_INET, address_text.c_str(), &socket_address.sin_addr) != 1) {
+        return "unavailable";
+    }
+
+    std::array<char, NI_MAXHOST> host{};
+    if (::getnameinfo(reinterpret_cast<const sockaddr*>(&socket_address),
+                      sizeof(socket_address),
+                      host.data(),
+                      static_cast<socklen_t>(host.size()),
+                      nullptr,
+                      0,
+                      NI_NAMEREQD) != 0) {
+        return "not_found";
+    }
+    return host.data();
 }
 
 std::optional<std::string> Server::extract_bmsg_text(
