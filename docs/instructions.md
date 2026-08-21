@@ -1,6 +1,11 @@
 <!--
 instructions.md
 
+v0.0.05:
+  - require the complete registered-user administration key set
+  - define temporary-class, final-Master and online-query invariants
+  - add private loopback +passwd and optional DNS rules
+
 v0.0.04:
   - raise active release to dc24h.eu-v0.0.04
   - require strict separation of add-password and change-password commands
@@ -22,7 +27,7 @@ Date: 2026-08-20
 
 # Engineering instructions
 
-These rules apply to `dc24h.eu-v0.0.04` and later changes.
+These rules apply to `dc24h.eu-v0.0.05` and later changes.
 
 ## Mandatory baseline
 
@@ -58,12 +63,19 @@ The command semantics are intentionally non-overlapping:
 - `key.user.new.username.class.password=[username.class.password]` creates a user with an initial password.
 - `key.user.new.username.class=[username.class]` creates a user without a password. `accounts.password_hash` must remain `NULL` until an explicit password-add command succeeds.
 - `key.user.new.id.password=[id.password]` may set a password only when the selected enabled account has no password. It must never overwrite an existing password. If a password is already present, return an informational error and make no change.
-- `key.user.change.id.password=[id.password]` is the only command that replaces an existing password by database ID.
-- `key.user.info.userlist.class=[class]` returns all enabled users in the selected class through the hub-local private response and must not be broadcast.
+- `key.user.change.id.password=[id.password]` replaces an existing password by database ID.
+- `key.user.change.username.password=[username.password]` replaces an existing password by nickname; an empty password resets it to SQL `NULL`.
+- `+passwd <password>` assigns only a missing password to the current enabled local account and must never overwrite an existing hash.
+- `key.user.info.userlist.class=[class]` returns all registered users in the selected class through the private response; `[]` defaults to class `0`, and enabled/password states are marked.
+- Removal, disable/enable, permanent class and account information use the keys documented in `docs/dc24h.eu-v0.0.05.md`.
+- Removal, disabling or demotion of the final enabled Master (10) must be rejected.
+- A temporary class is memory-only, disappears on restart and cannot exceed Admin (5).
+- IP, range, subnet and hostname keys inspect active IPv4 sessions only and return private results.
+- Reverse DNS is disabled by default and may run only when `dns_lookup=1`.
 
 The live chat form uses the protected `!set ` prefix, for example `!set key.user.new.id.password=[5.StrongPassword]`.
 
-Until ADC VERIFY (`GPA`/`PAS`) authenticates registered users, remote nicknames are not sufficient authorization for management operations. The v0.0.04 command path remains loopback-only and requires Admin (5) or Master (10), except the documented first local Master bootstrap while no enabled account exists.
+Until ADC VERIFY (`GPA`/`PAS`) authenticates registered users, remote nicknames are not sufficient authorization. The v0.0.05 path remains loopback-only and requires effective Admin (5) or Master (10), except first local Master bootstrap. `+passwd` is also loopback-only.
 
 ## File history rule
 

@@ -1,12 +1,15 @@
 # dc24h.conf.example
 #
+# v0.0.05:
+#   - add disabled-by-default reverse DNS for user host queries
+#
 # v0.0.01:
 #   - initial ADC hub runtime configuration
 #   - use UTF-8 and en_US.UTF-8 baseline locale
 #   - add MariaDB connection settings
 #
 # Author: gpt-5.6-sol
-# Date: 2026-08-19
+# Date: 2026-08-20
 
 hub_name=dc24h.eu
 hub_description=dc24h.eu Direct Connect ADC Hub
@@ -14,6 +17,7 @@ listen_address=0.0.0.0
 listen_port=1511
 max_clients=1024
 locale=en_US.UTF-8
+dns_lookup=0
 
 database_host=127.0.0.1
 database_port=3306

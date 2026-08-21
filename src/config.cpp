@@ -1,13 +1,16 @@
 /*
     config.cpp
 
+    v0.0.05:
+        - parse dns_lookup as a strict 0/1 configuration value
+
     v0.0.01:
         - implement key=value configuration parser
         - validate TCP/MariaDB ports and max client count
         - keep en_US.UTF-8 as baseline locale
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-20
 */
 
 #include "config.hpp"
@@ -77,6 +80,11 @@ Config load_config(const std::string& path) {
         else if (key == "listen_port") config.listen_port = parse_integer<std::uint16_t>(value, key);
         else if (key == "max_clients") config.max_clients = parse_integer<std::size_t>(value, key);
         else if (key == "locale") config.locale = value;
+        else if (key == "dns_lookup") {
+            if (value == "0") config.dns_lookup = false;
+            else if (value == "1") config.dns_lookup = true;
+            else throw std::runtime_error("dns_lookup must be 0 or 1");
+        }
         else if (key == "database_host") config.database_host = value;
         else if (key == "database_port") config.database_port = parse_integer<std::uint16_t>(value, key);
         else if (key == "database_name") config.database_name = value;

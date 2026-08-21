@@ -1,5 +1,9 @@
 -- schema.sql
 --
+-- v0.0.05:
+--   - add account updated_at metadata for complete user information
+--   - support complete registered-user lifecycle administration
+--
 -- v0.0.04:
 --   - allow NULL password_hash for accounts created without a password
 --   - preserve conditional password assignment semantics for new.id.password
@@ -41,6 +45,8 @@ CREATE TABLE IF NOT EXISTS accounts (
     user_class SMALLINT NOT NULL DEFAULT 0,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_accounts_user_class (user_class),
     CONSTRAINT chk_accounts_user_class
         CHECK (user_class IN (-1, 0, 1, 2, 3, 4, 5, 10))
@@ -51,6 +57,10 @@ ALTER TABLE accounts
 
 ALTER TABLE accounts
     MODIFY COLUMN password_hash VARCHAR(255) NULL;
+
+ALTER TABLE accounts
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL
+        DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS settings (
     setting_key VARCHAR(128) NOT NULL PRIMARY KEY,

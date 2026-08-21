@@ -1,6 +1,9 @@
 <!--
 changelog.md
 
+v0.0.05:
+  - add the complete user administration and online-query release
+
 v0.0.04:
   - add dc24h.eu-v0.0.04 password-lifecycle and user-list release
 
@@ -18,6 +21,36 @@ Date: 2026-08-20
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.05 — 2026-08-20
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- Account removal, disable/enable, permanent class change and complete registered-account information keys.
+- Password replacement/reset by nickname plus non-overwriting local `+passwd` first-password self-service.
+- Restart-scoped temporary class changes capped at Admin (5).
+- Private online IPv4, hostname, exact-address, inclusive-range and CIDR-subnet queries.
+- Optional `dns_lookup=0|1`, disabled by default.
+- MariaDB `accounts.updated_at` metadata and database administration APIs.
+- Release-mode CTest configuration that keeps assertion checks enabled.
+- ADR-0009 and the `dc24h.eu-v0.0.05` release manifest.
+
+### Changed
+
+- Raised all canonical release metadata to `0.0.05` / `dc24h.eu-v0.0.05`.
+- Class listing accepts `[]` as class 0 and includes both enabled and disabled accounts with password-presence state.
+- Effective authorization uses a temporary class when present.
+- Documentation, Debian 13 installation examples and systemd description now target v0.0.05.
+
+### Security
+
+- Reject removal, disabling or demotion of the final enabled Master.
+- Keep every management response private and intercept all password-bearing commands before broadcast.
+- Keep `!set` and `+passwd` loopback-only until ADC VERIFY exists.
+- Never expose password hashes; report only whether a password is set.
+- Disable reverse DNS by default.
 
 ## dc24h.eu-v0.0.04 — 2026-08-20
 

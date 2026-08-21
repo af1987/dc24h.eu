@@ -1,6 +1,9 @@
 /*
     adc_tests.cpp
 
+    v0.0.05:
+        - verify canonical 0.0.05 runtime release metadata
+
     v0.0.02:
         - test ADC Base32 and TIGR PID/CID verification with a fixed vector
         - test ADC 1.0.4 SUP/SID/INF login state transitions
@@ -8,13 +11,14 @@
         - verify sender SID spoofing is rejected
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-20
 */
 
 #include "adc_tests.hpp"
 
 #include "adc.hpp"
 #include "hash.hpp"
+#include "version.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -83,8 +87,10 @@ void run_protocol_tests() {
 }  // namespace dc24h::tests
 
 int main() {
+    assert(dc24h::version() == "0.0.05");
+    assert(dc24h::release_name() == "dc24h.eu-v0.0.05");
     dc24h::tests::run_hash_tests();
     dc24h::tests::run_protocol_tests();
-    std::cout << "dc24h.eu v0.0.02 tests passed\n";
+    std::cout << "dc24h.eu v0.0.05 tests passed\n";
     return 0;
 }

@@ -1,5 +1,9 @@
 # dc24h.service
 #
+# v0.0.05:
+#   - raise service description to dc24h.eu-v0.0.05
+#   - retain Debian 13 systemd hardening and US UTF-8 locale policy
+#
 # v0.0.04:
 #   - raise service description to dc24h.eu-v0.0.04
 #   - retain Debian 13 systemd hardening and US UTF-8 locale policy
@@ -21,7 +25,7 @@
 # Date: 2026-08-20
 
 [Unit]
-Description=dc24h.eu Direct Connect ADC Hub v0.0.04
+Description=dc24h.eu Direct Connect ADC Hub v0.0.05
 Documentation=https://github.com/af1987/dc24h.eu
 After=network-online.target mariadb.service
 Wants=network-online.target

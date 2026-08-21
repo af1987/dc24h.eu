@@ -1,5 +1,10 @@
 # CMakeLists.txt
 #
+# v0.0.05:
+#   - raise CMake project version to 0.0.05
+#   - retain ADC and complete user-key parser test targets
+#   - keep assert-based test checks enabled in Release builds
+#
 # v0.0.04:
 #   - raise CMake project version to 0.0.04
 #   - retain user/password command and MariaDB test targets
@@ -24,7 +29,7 @@
 
 cmake_minimum_required(VERSION 3.25)
 
-project(dc24h VERSION 0.0.04 LANGUAGES CXX)
+project(dc24h VERSION 0.0.05 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -86,7 +91,10 @@ if(BUILD_TESTING)
     )
     target_include_directories(dc24h_tests PRIVATE src tests)
     target_link_libraries(dc24h_tests PRIVATE PkgConfig::GCRYPT)
-    target_compile_options(dc24h_tests PRIVATE ${DC24H_WARNING_FLAGS})
+    target_compile_options(dc24h_tests PRIVATE
+        ${DC24H_WARNING_FLAGS}
+        -UNDEBUG
+    )
     add_test(NAME adc_protocol_and_tigr COMMAND dc24h_tests)
 
     add_executable(dc24h_user_tests
@@ -106,7 +114,10 @@ if(BUILD_TESTING)
         PkgConfig::GCRYPT
         Threads::Threads
     )
-    target_compile_options(dc24h_user_tests PRIVATE ${DC24H_WARNING_FLAGS})
+    target_compile_options(dc24h_user_tests PRIVATE
+        ${DC24H_WARNING_FLAGS}
+        -UNDEBUG
+    )
     add_test(NAME user_classes_and_set_commands COMMAND dc24h_user_tests)
 endif()
 

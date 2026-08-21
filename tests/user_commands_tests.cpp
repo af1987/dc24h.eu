@@ -3,6 +3,11 @@
 
     - user command and password helper regression tests
 
+        v0.0.05:
+            - test the complete registered-user administration key set
+            - test class-0 default, password reset, +passwd and IP queries
+            - reject temporary Master class above the Admin maximum
+
         v0.0.04:
             - test passwordless user registration parsing
             - verify new.id.password is distinct from change.id.password
@@ -97,6 +102,85 @@ void run_user_command_tests() {
             error);
     assert(hublist.has_value());
     assert(hublist->user_class == UserClass::hublist_pinger);
+
+    const auto default_class = UserCommandProcessor::parse(
+        "!set key.user.info.userlist.class=[]", error);
+    assert(default_class.has_value());
+    assert(default_class->user_class == UserClass::regular);
+
+    const auto reset_password = UserCommandProcessor::parse(
+        "!set key.user.change.username.password=[alice.]", error);
+    assert(reset_password.has_value());
+    assert(reset_password->action ==
+           UserSetAction::change_password_by_username);
+    assert(reset_password->username == "alice");
+    assert(reset_password->password.empty());
+
+    const auto self_password = UserCommandProcessor::parse(
+        "+passwd First.pass123", error);
+    assert(self_password.has_value());
+    assert(self_password->action == UserSetAction::self_add_password);
+
+    const auto remove = UserCommandProcessor::parse(
+        "!set key.user.remove.username=[alice]", error);
+    assert(remove.has_value());
+    assert(remove->action == UserSetAction::remove_user);
+
+    const auto disable = UserCommandProcessor::parse(
+        "!set key.user.disable.username=[alice]", error);
+    assert(disable.has_value());
+    assert(disable->action == UserSetAction::disable_user);
+
+    const auto enable = UserCommandProcessor::parse(
+        "!set key.user.enable.username=[alice]", error);
+    assert(enable.has_value());
+    assert(enable->action == UserSetAction::enable_user);
+
+    const auto change_class = UserCommandProcessor::parse(
+        "!set key.user.change.username.class=[alice.4]", error);
+    assert(change_class.has_value());
+    assert(change_class->action == UserSetAction::change_class);
+
+    const auto temporary_class = UserCommandProcessor::parse(
+        "!set key.user.change.username.class.temp=[alice.5]", error);
+    assert(temporary_class.has_value());
+    assert(temporary_class->action ==
+           UserSetAction::change_class_temporarily);
+
+    const auto invalid_temporary_master = UserCommandProcessor::parse(
+        "!set key.user.change.username.class.temp=[alice.10]", error);
+    assert(!invalid_temporary_master.has_value());
+    assert(error == "temporary class maximum is Admin (5)");
+
+    const auto info = UserCommandProcessor::parse(
+        "!set key.user.info.username=[alice]", error);
+    assert(info.has_value());
+    assert(info->action == UserSetAction::show_user_info);
+
+    const auto ip_host = UserCommandProcessor::parse(
+        "!set key.user.info.ip.hostname.username=[alice]", error);
+    assert(ip_host.has_value());
+    assert(ip_host->action == UserSetAction::show_ip_and_hostname);
+
+    const auto hostname = UserCommandProcessor::parse(
+        "!set key.user.info.hostname.username=[alice]", error);
+    assert(hostname.has_value());
+    assert(hostname->action == UserSetAction::show_hostname);
+
+    const auto by_ip = UserCommandProcessor::parse(
+        "!set key.user.info.userlist.ip=[127.0.0.1]", error);
+    assert(by_ip.has_value());
+    assert(by_ip->action == UserSetAction::find_users_by_ip);
+
+    const auto by_range = UserCommandProcessor::parse(
+        "!set key.user.info.userlist.iprange=[10.0.0.1-10.0.0.20]", error);
+    assert(by_range.has_value());
+    assert(by_range->action == UserSetAction::find_users_by_ip_range);
+
+    const auto by_subnet = UserCommandProcessor::parse(
+        "!set key.user.info.userlist.subnet=[10.0.0.0/24]", error);
+    assert(by_subnet.has_value());
+    assert(by_subnet->action == UserSetAction::find_users_by_subnet);
 
     const auto invalid_class =
         UserCommandProcessor::parse(

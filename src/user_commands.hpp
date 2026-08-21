@@ -3,6 +3,11 @@
 
     - hub-local user management command model
 
+        v0.0.05:
+            - add complete account lifecycle and information key actions
+            - add temporary-class and online IP/hostname query actions
+            - add resettable password-by-username and +passwd self-service models
+
         v0.0.04:
             - distinguish adding a missing password from changing an existing password
             - add passwordless user registration command
@@ -37,7 +42,20 @@ enum class UserSetAction {
     create_user_without_password,
     add_password_by_id,
     change_password_by_id,
-    list_users_by_class
+    change_password_by_username,
+    list_users_by_class,
+    remove_user,
+    disable_user,
+    enable_user,
+    change_class,
+    change_class_temporarily,
+    show_user_info,
+    show_ip_and_hostname,
+    show_hostname,
+    find_users_by_ip,
+    find_users_by_ip_range,
+    find_users_by_subnet,
+    self_add_password
 };
 
 struct UserSetCommand {
@@ -46,6 +64,7 @@ struct UserSetCommand {
     UserClass user_class{UserClass::regular};
     std::uint64_t user_id{0};
     std::string password;
+    std::string query;
 };
 
 struct UserSetResult {
@@ -60,6 +79,9 @@ public:
     static std::optional<UserSetCommand> parse(std::string_view command,
                                                std::string& error);
     UserSetResult execute(std::string_view command);
+    UserSetResult execute(const UserSetCommand& command);
+
+    static bool requires_live_sessions(UserSetAction action) noexcept;
 
 private:
     Database& database_;

@@ -1,6 +1,11 @@
 <!--
 README.md
 
+v0.0.05:
+  - raise project description to dc24h.eu-v0.0.05
+  - add complete user administration and online lookup keys
+  - add temporary class, +passwd, final-Master and DNS policies
+
 v0.0.04:
   - raise project description to dc24h.eu-v0.0.04
   - separate add-password and change-password semantics
@@ -22,7 +27,7 @@ Date: 2026-08-20
 
 # dc24h.eu
 
-`dc24h.eu-v0.0.04` is a C++20 Direct Connect hub foundation implementing ADC for Debian 13.
+`dc24h.eu-v0.0.05` is a C++20 Direct Connect ADC hub for Debian 13.
 
 ## Baseline
 
@@ -36,6 +41,7 @@ Date: 2026-08-20
 - Operating system: Debian 13
 - Service manager: systemd
 - Default ADC TCP port: 1511
+- Reverse DNS: disabled by default (`dns_lookup=0`)
 - Author: `gpt-5.6-sol`
 - Release date: `2026-08-20`
 
@@ -51,10 +57,12 @@ Commands are sent through the existing protected hub-local `!set` command path a
   `!set key.user.new.id.password=[id.password]`
 - Change/replace the password for an existing account ID:
   `!set key.user.change.id.password=[id.password]`
-- Show all enabled users in a class in the private response:
+- Show all registered users in a class, including enabled state, in the private response:
   `!set key.user.info.userlist.class=[class]`
 
-`key.user.new.id.password` is deliberately **not** an alias for password change in v0.0.04. If a password already exists, no database change is made and the command tells the operator to use `key.user.change.id.password` instead.
+The v0.0.05 command set also provides password replacement/reset by nickname, `+passwd` first-password self-service, removal, disable/enable, permanent and restart-scoped class changes, registered-account details, and online IP/hostname/range/subnet queries. See `docs/dc24h.eu-v0.0.05.md` for the complete command table.
+
+`key.user.new.id.password` is not an alias for password change. If a password already exists, no database change is made. `key.user.change.username.password=[username.]` resets a password to `NULL`, after which the current local nickname may set it once with `+passwd <password>`.
 
 ## User classes
 
@@ -71,6 +79,6 @@ Commands are sent through the existing protected hub-local `!set` command path a
 
 Passwords are persisted only as salted PBKDF2-HMAC-SHA256 hashes. Passwordless registrations store `NULL` in `accounts.password_hash` until `key.user.new.id.password` assigns the first password.
 
-The current management trust boundary remains loopback-only (`127.0.0.1`) and requires Admin (5) or Master (10) after first-Master bootstrap because ADC VERIFY (`GPA`/`PAS`) is not implemented yet.
+The management trust boundary remains loopback-only (`127.0.0.1`) and requires effective Admin (5) or Master (10) after first-Master bootstrap because ADC VERIFY (`GPA`/`PAS`) is not implemented. The final enabled Master cannot be removed, disabled or demoted. Temporary classes are capped at Admin and disappear on restart.
 
-See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`, `docs/dc24h.eu-v0.0.04.md` and `docs/adr/0008-user-password-lifecycle-userlist.md`.
+See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`, `docs/dc24h.eu-v0.0.05.md` and `docs/adr/0009-complete-user-administration.md`.
