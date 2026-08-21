@@ -1,6 +1,9 @@
 <!--
 changelog.md
 
+v0.0.08:
+  - add persistent, auditable kick and ban admission controls
+
 v0.0.07:
   - add class/nickname policy, auto-registration and account security release
 
@@ -27,6 +30,54 @@ Date: 2026-08-21
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.08 — 2026-08-21
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- Exact global keys `key.kicks=300` for the default kick rejoin delay and
+  `key.bans=31536000` for the maximum temporary duration.
+- Paired `moderation.cpp` / `moderation.hpp` target, duration and matcher module.
+- Symmetric `key.kicks.add/remove/info/list` and
+  `key.bans.add/remove/info/list` protected operations.
+- Typed nickname, ADC CID, IPv4, range/CIDR, nickname-prefix and exact-share
+  ban targets.
+- MariaDB `moderation_entries` audit with UTC expiry and soft-revocation actor,
+  time and reason.
+- ADR-0012 and the v0.0.08 release manifest.
+
+### Changed
+
+- Raised canonical runtime, CMake, documentation and systemd metadata to
+  `0.0.08`.
+- Punitive kick now writes a nickname/CID rejoin block before socket shutdown;
+  non-punitive disconnect remains unchanged.
+- Active address bans are enforced after accept, and identity/share bans before
+  ADC NORMAL.
+- Duplicate INF names and post-login `NI`, `ID`, `PD` or `SS` changes are
+  rejected.
+- Expanded systemd sandboxing with empty capability sets, private devices,
+  namespace/SUID/realtime restrictions, kernel/clock protection and `UMask`.
+
+### Security
+
+- Admission fails closed if the moderation lookup cannot reach MariaDB.
+- Ban inputs use explicit target kinds and canonical IPv4 parsing instead of
+  ambiguous target inference or operator-provided regular expressions.
+- Ban history is never deleted by unban, and management remains loopback-only
+  until ADC VERIFY authentication is implemented.
+
+### Validation
+
+- Debian 13 Release build with project warnings promoted to errors; CTest 2/2.
+- Idempotent schema application twice on isolated MariaDB 11.8, with 30 seeded
+  settings and the moderation table/index/constraint shape verified.
+- Real `ncdc 1.23.1` ADC/TIGR echo with three clients, kick denial/revocation,
+  timed ban denial, private list/info, soft-unban, restart persistence and
+  Master-only broad/permanent authorization.
+- Forbidden-name, C++ pair, secret and systemd unit checks.
 
 ## dc24h.eu-v0.0.07 — 2026-08-21
 

@@ -1,6 +1,10 @@
 <!--
 install.md
 
+v0.0.08:
+  - install persistent kick/ban schema and v0.0.08 branch
+  - document moderation operations, migration and two-client ncdc validation
+
 v0.0.07:
   - install v0.0.07 policy schema and branch
   - document auto-registration and ncdc validation
@@ -46,15 +50,17 @@ The build requires a C++20 compiler, CMake, pkg-config, MariaDB Connector/C deve
 ```bash
 git clone https://github.com/af1987/dc24h.eu.git
 cd dc24h.eu
-git checkout agent/dc24h-v0.0.07
+git checkout agent/dc24h-v0.0.08
 sudo DC24H_DB_PASSWORD='replace-with-a-strong-password' ./scripts/install.sh
 ```
 
 The installer builds the daemon, applies `sql/schema.sql`, runs CTest, installs the systemd unit and starts `dc24h.service`.
 
-## Database migration for v0.0.07
+## Database migration for v0.0.08
 
-The installer applies `sql/schema.sql`. v0.0.07 adds hub settings, account binding/profile fields, password setup state and login telemetry while retaining all earlier idempotent migrations:
+The installer applies `sql/schema.sql`. v0.0.08 adds the append-oriented
+moderation table and two settings while retaining all earlier idempotent
+migrations:
 
 ```sql
 ALTER TABLE accounts
@@ -88,8 +94,36 @@ CREATE TABLE IF NOT EXISTS user_timed_policies (
     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
 
--- The complete idempotent seed list contains 28 validated rows.
+CREATE TABLE IF NOT EXISTS moderation_entries (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    action_type VARCHAR(8) NOT NULL,
+    target_type VARCHAR(16) NOT NULL,
+    target_value VARCHAR(255) NOT NULL,
+    secondary_value VARCHAR(255) NOT NULL DEFAULT '',
+    reason VARCHAR(1000) NOT NULL,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    expires_at TIMESTAMP(6) NULL,
+    revoked_at TIMESTAMP(6) NULL,
+    revoked_by VARCHAR(64) NULL,
+    revoke_reason VARCHAR(1000) NULL,
+    INDEX idx_moderation_active (revoked_at, expires_at, action_type),
+    INDEX idx_moderation_target
+        (target_type, target_value, revoked_at, expires_at),
+    INDEX idx_moderation_secondary
+        (target_type, secondary_value, revoked_at, expires_at),
+    INDEX idx_moderation_action (action_type, id),
+    CONSTRAINT chk_moderation_action
+        CHECK (action_type IN ('kick', 'ban')),
+    CONSTRAINT chk_moderation_target
+        CHECK (target_type IN
+            ('identity', 'nick', 'cid', 'ip', 'range', 'prefix', 'share'))
+);
+
+-- The complete idempotent seed list contains 30 validated rows.
 INSERT IGNORE INTO settings(setting_key, setting_value) VALUES
+    ('key.kicks', '300'),
+    ('key.bans', '31536000'),
     ('key.class.permission.register.difference', '2'),
     ('key.nick.length.minimum', '3'),
     ('key.user.autoreg.class', '-1'),
@@ -165,6 +199,22 @@ Set `dns_lookup=1` in `/etc/dc24h.eu/dc24h.conf` only if reverse DNS is desired,
 ```text
 !set key.user.disconnect.username=[alice]
 !set key.user.kick.username=[alice]
+!set key.kicks=[300]
+!set key.bans=[31536000]
+!set key.kicks.add=[alice|Rule violation]
+!set key.kicks.add=[alice|2h|Repeated rule violation]
+!set key.kicks.info=[41]
+!set key.kicks.list=[20]
+!set key.kicks.remove=[41|Kick entered in error]
+!set key.bans.add=[nick|alice|2w|Repeated abuse]
+!set key.bans.add=[cid|W6AIUW3CLDF6OGHNVE4JPDDJ2P74IWRCF2O36TA|permanent|Identity abuse]
+!set key.bans.add=[ip|192.0.2.10|2d|Address abuse]
+!set key.bans.add=[range|192.0.2.0/24|1M|Network abuse]
+!set key.bans.add=[prefix|bot-|1y|Automated clients]
+!set key.bans.add=[share|4096|1h|Exact-share test]
+!set key.bans.info=[42]
+!set key.bans.list=[20]
+!set key.bans.remove=[42|Appeal accepted]
 !set key.user.protect.username.class=[alice.4]
 !set key.user.hide.share.username=[alice.1]
 !set key.user.hide.operator.username=[alice.1]
@@ -178,7 +228,10 @@ Set `dns_lookup=1` in `/etc/dc24h.eu/dc24h.conf` only if reverse DNS is desired,
 !opchat private operator message
 ```
 
-All current policy, restriction and privilege keys are listed with defaults in `docs/dc24h.eu-v0.0.07.md`. Explicit moderation durations use `m`, `h` or `d` and range from `1m` to `365d`.
+All current policy, restriction and privilege keys are listed with defaults in
+`docs/dc24h.eu-v0.0.08.md`. The older account-policy duration keys retain
+`m`/`h`/`d`; new kick/ban actions accept `s`, `m`, `h`, `d`, `w`, `M` and `y`
+up to the `key.bans` ceiling. Reasons are mandatory and use `|` separators.
 
 Passwords may contain dots; the parser consumes only the required leading separators.
 
@@ -214,10 +267,16 @@ In `ncdc`:
 
 ```text
 /open dc24h adc://127.0.0.1:1511/
-/say ncdc-v0.0.07-connection-test
+/say ncdc-v0.0.08-connection-test
 ```
 
-A successful test shows the hub description, the connected nickname/user count and the echoed chat line. v0.0.07 is validated with Debian `ncdc`. BASE/TIGR are negotiated in SUP; TIGR PID/CID validation remains active.
+A successful test shows the hub description, connected nickname/user count and
+echoed chat line. For moderation validation, connect a second isolated `ncdc`
+session with another nickname, kick it from the local Master session, verify
+immediate reconnect denial, then verify access after expiry. Repeat with a
+timed `key.bans.add`, `key.bans.remove`, and one hub restart before removal.
+v0.0.08 was validated this way with Debian `ncdc 1.23.1`. BASE/TIGR are
+negotiated in SUP and TIGR PID/CID validation remains active.
 
 ## MariaDB
 
@@ -225,8 +284,11 @@ The application uses database `dc24h`, MariaDB Connector/C and `utf8mb4`. `accou
 
 ## Network
 
-The default ADC listener is TCP port `1511`. v0.0.07 remains IPv4-only. Administrative `!set` paths remain restricted to `127.0.0.1`; `+passwd` and explicitly enabled `+regme` are self-service exceptions.
+The default ADC listener is TCP port `1511`. v0.0.08 remains IPv4-only. Administrative `!set` paths remain restricted to `127.0.0.1`; `+passwd` and explicitly enabled `+regme` are self-service exceptions.
 
 ## systemd
 
-The service runs as the dedicated `dc24h` account, depends on MariaDB and network-online, uses `en_US.UTF-8`, restarts on failure and retains the existing hardening directives.
+The service runs as the dedicated `dc24h` account, depends on MariaDB and
+network-online, uses `en_US.UTF-8`, restarts on failure, has no capabilities and
+enables the Debian 13 systemd filesystem, device, namespace, kernel and runtime
+hardening directives in `deploy/dc24h.service`.

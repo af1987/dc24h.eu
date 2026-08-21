@@ -1,6 +1,10 @@
 <!--
 README.md
 
+v0.0.08:
+  - raise project description to dc24h.eu-v0.0.08
+  - add persistent key.kicks/key.bans admission and audit behavior
+
 v0.0.07:
   - raise project description to dc24h.eu-v0.0.07
   - add class/nickname policy, auto-registration and account security metadata
@@ -35,7 +39,7 @@ Date: 2026-08-21
 
 # dc24h.eu
 
-`dc24h.eu-v0.0.07` is a C++20 Direct Connect ADC hub for Debian 13.
+`dc24h.eu-v0.0.08` is a C++20 Direct Connect ADC hub for Debian 13.
 
 ## Baseline
 
@@ -68,7 +72,11 @@ Commands are sent through the existing protected hub-local `!set` command path a
 - Show all registered users in a class, including enabled state, in the private response:
   `!set key.user.info.userlist.class=[class]`
 
-The v0.0.07 command set adds persistent class-permission thresholds, nickname rules, `+regme <password>`, share/password gates, initial-password timeout, authentication IP, email/public note, kick-message visibility and login telemetry. See `docs/dc24h.eu-v0.0.07.md` for every key and default.
+The v0.0.08 command set adds `key.kicks` (default rejoin delay), `key.bans`
+(maximum temporary duration), typed kick/ban operations and append-oriented
+MariaDB audit. Active address bans are checked after accept; nickname, ADC CID,
+prefix and share bans are checked before NORMAL. See
+`docs/dc24h.eu-v0.0.08.md` for syntax and defaults.
 
 `key.user.new.id.password` is not an alias for password change. If a password already exists, no database change is made. `key.user.change.username.password=[username.]` resets a password to `NULL`, after which the current local nickname may set it once with `+passwd <password>`.
 
@@ -89,6 +97,9 @@ Passwords are persisted only as salted PBKDF2-HMAC-SHA256 hashes. Passwordless r
 
 The management trust boundary remains loopback-only (`127.0.0.1`) because ADC VERIFY (`GPA`/`PAS`) is not implemented. Timed policies persist in MariaDB with UTC expiry and are enforced before ADC routing. Delegated registration is capped at class 1.
 
-ADC/TIGR connectivity is validated with Debian 13 `ncdc`.
+ADC/TIGR connectivity, kick denial/expiry, ban/unban and restart persistence are
+validated with Debian 13 `ncdc 1.23.1` against an isolated MariaDB instance.
 
-See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`, `docs/dc24h.eu-v0.0.07.md` and `docs/adr/0011-class-nickname-autoreg-policy.md`.
+See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`,
+`docs/dc24h.eu-v0.0.08.md` and
+`docs/adr/0012-persistent-kicks-bans.md`.

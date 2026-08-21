@@ -1,6 +1,10 @@
 <!--
 readme.md
 
+v0.0.08:
+  - index persistent kick/ban behavior and ADR-0012
+  - point operations to the v0.0.08 manifest
+
 v0.0.07:
   - index the class/nickname policy and auto-registration release
   - point operations to ADR-0011 and the v0.0.07 manifest
@@ -33,7 +37,7 @@ Date: 2026-08-21
 
 # dc24h.eu documentation
 
-This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.07`.
+This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.08`.
 
 ## Documents
 
@@ -41,7 +45,8 @@ This directory is the authoritative design and operations documentation for `dc2
 - `instructions.md` — permanent engineering, versioning, ADR, password-security and C++ pair rules.
 - `changelog.md` — release history.
 - `install.md` — Debian 13 installation, tests, systemd and first-Master bootstrap.
-- `dc24h.eu-v0.0.07.md` — current release manifest and full policy/account-key table.
+- `dc24h.eu-v0.0.08.md` — current kick/ban release manifest and command table.
+- `dc24h.eu-v0.0.07.md` — previous policy/account-key manifest.
 - `dc24h.eu-v0.0.06.md` — previous moderation and interoperability manifest.
 - `dc24h.eu-v0.0.05.md` — previous release manifest.
 - `dc24h.eu-v0.0.04.md` — earlier release manifest.
@@ -74,4 +79,8 @@ Supported protected commands:
 - `!set key.user.change.id.password=[id.password]` — replaces the password.
 - `!set key.user.info.userlist.class=[class]` — returns registered users and enabled/password state; `[]` defaults to class 0.
 
-v0.0.07 adds persistent class thresholds, nickname admission rules, controlled self-registration, password setup deadlines, authentication IP and account metadata/telemetry. The complete key table is in `dc24h.eu-v0.0.07.md`; architectural decisions are in ADR-0011. ADC connectivity is validated with `ncdc`.
+v0.0.08 adds persistent kick rejoin blocks, typed permanent/temporary bans,
+soft-unban audit and admission enforcement by nickname, CID, IPv4, range,
+prefix or exact share. The command table is in `dc24h.eu-v0.0.08.md`;
+architectural decisions are in ADR-0012. ADC connectivity and moderation flows
+are validated with `ncdc`.

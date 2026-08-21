@@ -1,6 +1,9 @@
 <!--
 0011-class-nickname-autoreg-policy.md
 
+v0.0.08:
+  - document alternatives considered to retain the canonical ADR format
+
 v0.0.07:
   - record class-policy, nickname-admission and self-registration decisions
   - record account binding, password deadline and telemetry decisions
@@ -38,6 +41,16 @@ The hub already has numeric account classes and complete user moderation, but fi
 - A restrictive nickname or minimum-class change affects subsequent identifications.
 - Runtime class reach is enforced for registration, kick, PM and download requests. Thresholds for unimplemented plugin/topic/trigger command families are persisted for future consumers.
 - Nickname-based self-service remains weaker than full ADC VERIFY; IP binding can narrow but does not replace protocol authentication.
+
+## Alternatives considered
+
+- Hard-code all class and nickname rules. Rejected because operators need
+  validated policy changes without rebuilding the daemon.
+- Enable unrestricted self-registration. Rejected because share, prefix and
+  class boundaries are required to prevent privilege expansion.
+- Treat IP binding as complete authentication. Rejected because address
+  ownership does not prove ADC account ownership and shared addresses are
+  common.
 
 ## Validation
 

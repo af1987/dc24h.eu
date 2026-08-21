@@ -1,6 +1,11 @@
 /*
     server.hpp
 
+    v0.0.08:
+        - serialize moderation writes with ADC admission decisions
+        - serialize non-blocking socket writes outside client-state locks
+        - preserve effective-class protection across live moderation
+
     v0.0.07:
         - enforce hub settings, auto-registration and account IP binding
         - enforce initial-password deadlines and account telemetry
@@ -129,7 +134,7 @@ private:
         const std::vector<std::string>& excluded);
 
     std::string next_sid();
-    static bool send_all(int fd, const std::string& message);
+    bool send_all(int fd, const std::string& message);
 
     const Config& config_;
     const AdcProtocol& protocol_;
@@ -137,7 +142,9 @@ private:
     UserCommandProcessor user_commands_;
 
     std::atomic<std::uint32_t> sid_counter_{1};
+    std::mutex moderation_mutex_;
     std::mutex clients_mutex_;
+    std::mutex send_mutex_;
     std::unordered_map<int, ClientInfo> clients_;
 
     mutable std::mutex temporary_classes_mutex_;

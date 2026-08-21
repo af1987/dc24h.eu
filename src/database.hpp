@@ -3,6 +3,11 @@
 
     - MariaDB persistence API
 
+        v0.0.08:
+            - persist auditable kick and ban entries
+            - expose filtered admission matching, listing and soft-revocation APIs
+            - persist key.kicks and key.bans duration controls
+
         v0.0.07:
             - persist hub class, nickname and auto-registration settings
             - add account IP, email, public-note and kick-message controls
@@ -42,6 +47,7 @@
 
 #include "config.hpp"
 #include "hub_settings.hpp"
+#include "moderation.hpp"
 #include "user.hpp"
 
 #include <mysql.h>
@@ -182,6 +188,25 @@ public:
     RuntimeUserPolicy runtime_policy(std::string_view username);
     HubSettings hub_settings();
     bool set_hub_setting(std::string_view key, std::string_view value);
+    std::uint64_t add_moderation_entry(
+        ModerationAction action,
+        const ModerationTarget& target,
+        std::string_view reason,
+        std::string_view created_by,
+        std::uint64_t duration_seconds);
+    std::optional<ModerationEntry> active_moderation_match(
+        std::string_view nickname,
+        std::string_view cid,
+        std::string_view ipv4,
+        std::optional<std::uint64_t> share_size);
+    std::optional<ModerationEntry> moderation_entry(std::uint64_t id);
+    std::vector<ModerationEntry> moderation_entries(
+        ModerationAction action,
+        std::uint16_t limit);
+    bool revoke_moderation_entry(std::uint64_t id,
+                                 ModerationAction action,
+                                 std::string_view revoked_by,
+                                 std::string_view reason);
     void record_account_login(std::string_view username,
                               std::string_view remote_address);
     void record_account_logout(std::string_view username);

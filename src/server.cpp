@@ -1,6 +1,13 @@
 /*
     server.cpp
 
+    v0.0.08:
+        - enforce persistent kick and ban entries before ADC NORMAL
+        - create moderation audit rows before disconnecting matched sessions
+        - add private ban creation, listing and revocation execution paths
+        - keep socket writes non-blocking and outside shared state locks
+        - apply temporary target classes to kick and ban protection
+
     v0.0.07:
         - enforce class, nickname, IP-binding and interaction settings
         - add +regme, password setup deadlines and account telemetry
@@ -72,6 +79,12 @@ std::optional<std::uint32_t> ipv4_host_order(std::string_view text) {
     return ntohl(address.s_addr);
 }
 
+std::string moderation_denial(const ModerationEntry& entry) {
+    return "ISTA 230 " + AdcProtocol::escape_adc(
+        "Access denied by " + std::string(moderation_action_name(entry.action)) +
+        " id=" + std::to_string(entry.id) + " reason=" + entry.reason) + "\n";
+}
+
 }  // namespace
 
 Server::Server(const Config& config,
@@ -129,6 +142,27 @@ int Server::run(const std::atomic_bool& stop_requested) {
                         sizeof(address_buffer));
         const std::string remote_address =
             address != nullptr ? address : "unknown";
+
+        try {
+            std::optional<ModerationEntry> blocked;
+            {
+                std::lock_guard moderation_lock(moderation_mutex_);
+                blocked = database_.active_moderation_match(
+                    {}, {}, remote_address, std::nullopt);
+            }
+            if (blocked.has_value()) {
+                send_all(client_fd, moderation_denial(*blocked));
+                ::shutdown(client_fd, SHUT_RDWR);
+                ::close(client_fd);
+                continue;
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "moderation admission error: " << ex.what() << '\n';
+            send_all(client_fd, "ISTA 500 Moderation\\scheck\\sunavailable\n");
+            ::shutdown(client_fd, SHUT_RDWR);
+            ::close(client_fd);
+            continue;
+        }
 
         std::string sid;
         {
@@ -310,10 +344,23 @@ void Server::client_loop(int client_fd,
 bool Server::finish_identification(
     int client_fd,
     const std::vector<std::pair<std::string, std::string>>& fields) {
+    std::unique_lock moderation_lock(moderation_mutex_);
     std::vector<std::string> existing_users;
     std::string encoded_nick;
+    std::string cid;
+    std::optional<std::uint64_t> share_size;
     for (const auto& [name, value] : fields) {
         if (name == "NI") encoded_nick = value;
+        if (name == "ID") cid = value;
+        if (name == "SS") {
+            std::uint64_t parsed_share = 0;
+            const auto parsed = std::from_chars(
+                value.data(), value.data() + value.size(), parsed_share);
+            if (parsed.ec == std::errc{} &&
+                parsed.ptr == value.data() + value.size()) {
+                share_size = parsed_share;
+            }
+        }
     }
     const auto decoded_nick = decode_adc_value(encoded_nick);
     RuntimeUserPolicy policy;
@@ -336,6 +383,12 @@ bool Server::finish_identification(
         if (!nickname_allowed(*decoded_nick, hub_settings, nickname_error)) {
             send_all(client_fd, "ISTA 223 " +
                 AdcProtocol::escape_adc(nickname_error) + "\n");
+            return false;
+        }
+        const auto blocked = database_.active_moderation_match(
+            *decoded_nick, cid, remote_address, share_size);
+        if (blocked.has_value()) {
+            send_all(client_fd, moderation_denial(*blocked));
             return false;
         }
         policy = database_.runtime_policy(*decoded_nick);
@@ -364,28 +417,37 @@ bool Server::finish_identification(
         auto current = clients_.find(client_fd);
         if (current == clients_.end()) return false;
 
-        std::string nick;
-        std::string cid;
+        std::string session_cid;
         for (const auto& [name, value] : fields) {
-            if (name == "NI") nick = value;
-            if (name == "ID") cid = value;
+            if (name == "ID") session_cid = value;
         }
 
         for (const auto& [fd, client] : clients_) {
             if (fd == client_fd || !client.normal) continue;
 
             const auto existing_nick = client.inf_fields.find("NI");
-            if (!nick.empty() &&
-                existing_nick != client.inf_fields.end() &&
-                existing_nick->second == nick) {
-                send_all(client_fd, "ISTA 222 Nick\\staken\n");
-                return false;
+            if (decoded_nick.has_value() &&
+                existing_nick != client.inf_fields.end()) {
+                const auto existing_decoded =
+                    decode_adc_value(existing_nick->second);
+                const ModerationTarget nickname_target{
+                    ModerationTargetKind::nickname, *decoded_nick, {}};
+                if (existing_decoded.has_value() &&
+                    moderation_target_matches(
+                        nickname_target,
+                        *existing_decoded,
+                        {},
+                        {},
+                        std::nullopt)) {
+                    send_all(client_fd, "ISTA 222 Nick\\staken\n");
+                    return false;
+                }
             }
 
             const auto existing_cid = client.inf_fields.find("ID");
-            if (!cid.empty() &&
+            if (!session_cid.empty() &&
                 existing_cid != client.inf_fields.end() &&
-                existing_cid->second == cid) {
+                existing_cid->second == session_cid) {
                 send_all(client_fd, "ISTA 224 CID\\staken\n");
                 return false;
             }
@@ -414,6 +476,7 @@ bool Server::finish_identification(
                 static_cast<std::int64_t>(hub_settings.password_initial_timeout);
         }
     }
+    moderation_lock.unlock();
 
     if (decoded_nick.has_value() && registered_account) {
         try {
@@ -497,25 +560,40 @@ bool Server::handle_opchat_command(int sender_fd,
         return true;
     }
 
-    std::lock_guard lock(clients_mutex_);
-    const auto sender = clients_.find(sender_fd);
-    if (sender == clients_.end()) return true;
-    const bool sender_allowed =
-        static_cast<std::int16_t>(sender->second.policy.user_class) >= 3 ||
-        has_active_policy(sender->second, "opchat");
+    bool sender_allowed = false;
+    std::string response;
+    std::vector<int> sockets;
+    {
+        std::lock_guard lock(clients_mutex_);
+        const auto sender = clients_.find(sender_fd);
+        if (sender == clients_.end()) return true;
+        sender_allowed =
+            static_cast<std::int16_t>(sender->second.policy.user_class) >= 3 ||
+            has_active_policy(sender->second, "opchat");
+        if (sender_allowed) {
+            const auto nick = client_username(sender->second);
+            response = "[OPChat] " +
+                (nick.has_value() ? *nick : sender->second.sid) + ": " + message;
+            sockets.reserve(clients_.size());
+            for (const auto& [fd, client] : clients_) {
+                if (!client.normal) continue;
+                if (static_cast<std::int16_t>(client.policy.user_class) >= 3 ||
+                    has_active_policy(client, "opchat")) {
+                    const int socket = ::dup(fd);
+                    if (socket >= 0) sockets.push_back(socket);
+                }
+            }
+        }
+    }
     if (!sender_allowed) {
         send_all(sender_fd, "IMSG [OPChat]\\saccess\\sdenied\n");
         return true;
     }
-    const auto nick = client_username(sender->second);
-    const std::string response = "[OPChat] " +
-        (nick.has_value() ? *nick : sender->second.sid) + ": " + message;
-    for (const auto& [fd, client] : clients_) {
-        if (!client.normal) continue;
-        if (static_cast<std::int16_t>(client.policy.user_class) >= 3 ||
-            has_active_policy(client, "opchat")) {
-            send_all(fd, "IMSG " + AdcProtocol::escape_adc(response) + "\n");
-        }
+    const auto response_message =
+        "IMSG " + AdcProtocol::escape_adc(response) + "\n";
+    for (const int socket : sockets) {
+        send_all(socket, response_message);
+        ::close(socket);
     }
     return true;
 }
@@ -652,7 +730,7 @@ bool Server::handle_user_set_command(int sender_fd,
         send_all(sender_fd,
                  "IMSG " +
                      AdcProtocol::escape_adc(
-                         "[user] rejected: management commands are loopback-only in v0.0.07") +
+                         "[user] rejected: management commands are loopback-only until ADC VERIFY is available") +
                      "\n");
         return true;
     }
@@ -668,6 +746,16 @@ bool Server::handle_user_set_command(int sender_fd,
         }
 
         const auto hub_settings = database_.hub_settings();
+        if ((parsed->action == UserSetAction::kick_user ||
+             parsed->action == UserSetAction::create_ban) &&
+            parsed->duration_seconds >
+                hub_settings.maximum_temporary_ban_seconds) {
+            send_all(sender_fd,
+                     "IMSG " + AdcProtocol::escape_adc(
+                         "[moderation] error: duration exceeds key.bans") +
+                     "\n");
+            return true;
+        }
         if (!parsed->password.empty() &&
             parsed->password.size() < hub_settings.password_minimum_length) {
             send_all(sender_fd,
@@ -842,6 +930,18 @@ bool Server::handle_user_set_command(int sender_fd,
             return true;
         }
 
+        if (parsed->action == UserSetAction::create_ban &&
+            (parsed->duration_seconds == 0U ||
+             parsed->moderation_target.kind !=
+                 ModerationTargetKind::nickname) &&
+            *effective_class != UserClass::master) {
+            send_all(sender_fd,
+                     "IMSG " + AdcProtocol::escape_adc(
+                         "[set] rejected: Master(10) required for permanent or non-nickname bans") +
+                     "\n");
+            return true;
+        }
+
         if ((parsed->action == UserSetAction::create_user ||
              parsed->action == UserSetAction::create_user_without_password)) {
             std::string nickname_error;
@@ -886,12 +986,41 @@ bool Server::handle_user_set_command(int sender_fd,
 UserSetResult Server::execute_live_user_command(
     int sender_fd,
     const UserSetCommand& command) {
-    if (command.action == UserSetAction::disconnect_user ||
-        command.action == UserSetAction::kick_user) {
+    if (command.action == UserSetAction::disconnect_user) {
         int target_fd = -1;
+        {
+            std::lock_guard lock(clients_mutex_);
+            for (const auto& [fd, client] : clients_) {
+                if (!client.normal) continue;
+                const auto target_nick = client_username(client);
+                if (target_nick.has_value() &&
+                    *target_nick == command.username) {
+                    target_fd = fd;
+                    break;
+                }
+            }
+        }
+        if (target_fd < 0) return {false, "user is not online"};
+        send_all(
+            target_fd,
+            "IMSG Your\\ssession\\swas\\sdisconnected\\sby\\san\\sadministrator\n");
+        ::shutdown(target_fd, SHUT_RDWR);
+        return {true, "user disconnected without kick: username=" +
+            command.username};
+    }
+
+    if (command.action == UserSetAction::kick_user) {
+        std::unique_lock moderation_lock(moderation_mutex_);
+        int target_fd = -1;
+        std::string target_sid;
+        std::string target_cid;
+        std::string target_username;
         std::string actor_username;
         UserClass actor_class = UserClass::regular;
+        UserClass target_class = UserClass::regular;
         RuntimeUserPolicy target_policy;
+        const ModerationTarget nickname_target{
+            ModerationTargetKind::nickname, command.username, {}};
         {
             std::lock_guard lock(clients_mutex_);
             const auto actor = clients_.find(sender_fd);
@@ -903,62 +1032,284 @@ UserSetResult Server::execute_live_user_command(
             for (const auto& [fd, client] : clients_) {
                 if (!client.normal) continue;
                 const auto target_nick = client_username(client);
-                if (target_nick.has_value() &&
-                    *target_nick == command.username) {
-                    target_fd = fd;
-                    target_policy = client.policy;
-                    break;
+                if (!target_nick.has_value() ||
+                    !moderation_target_matches(
+                        nickname_target, *target_nick, {}, {}, std::nullopt)) {
+                    continue;
                 }
+                target_fd = fd;
+                target_sid = client.sid;
+                target_username = *target_nick;
+                target_policy = client.policy;
+                target_class = client.policy.user_class;
+                const auto cid_field = client.inf_fields.find("ID");
+                if (cid_field != client.inf_fields.end()) {
+                    target_cid = cid_field->second;
+                }
+                break;
             }
         }
         if (target_fd < 0) return {false, "user is not online"};
-        if (target_fd == sender_fd && command.action == UserSetAction::kick_user) {
-            return {false, "cannot kick your own session"};
-        }
+        if (target_fd == sender_fd) return {false, "cannot kick your own session"};
+        if (target_cid.empty()) return {false, "target ADC identity is unavailable"};
 
-        if (!actor_username.empty()) {
-            const auto temporary = temporary_class_for(actor_username);
-            if (temporary.has_value()) actor_class = *temporary;
-        }
-        if (command.action == UserSetAction::kick_user &&
-            static_cast<std::int16_t>(actor_class) <=
-                target_policy.kick_protect_class) {
-            return {false, "target is protected from this actor class"};
-        }
-        if (command.action == UserSetAction::kick_user) {
-            const auto settings = database_.hub_settings();
-            if (static_cast<std::int16_t>(actor_class) -
-                    static_cast<std::int16_t>(target_policy.user_class) <
-                settings.kick_class_difference) {
-                return {false, "target class is outside the configured kick difference"};
+        {
+            std::lock_guard lock(temporary_classes_mutex_);
+            const auto actor_temporary = temporary_classes_.find(actor_username);
+            if (actor_temporary != temporary_classes_.end()) {
+                actor_class = actor_temporary->second;
+            }
+            const auto target_temporary = temporary_classes_.find(target_username);
+            if (target_temporary != temporary_classes_.end()) {
+                target_class = target_temporary->second;
             }
         }
+        if (static_cast<std::int16_t>(actor_class) <=
+            target_policy.kick_protect_class) {
+            return {false, "target is protected from this actor class"};
+        }
+        const auto settings = database_.hub_settings();
+        if (static_cast<std::int16_t>(actor_class) -
+                static_cast<std::int16_t>(target_class) <
+            settings.kick_class_difference) {
+            return {false, "target class is outside the configured kick difference"};
+        }
+        const auto duration = command.duration_seconds == 0U
+            ? static_cast<std::uint64_t>(settings.kick_rejoin_delay_seconds)
+            : command.duration_seconds;
+        if (duration > settings.maximum_temporary_ban_seconds) {
+            return {false, "kick duration exceeds key.bans"};
+        }
+        const std::string reason = command.moderation_reason.empty()
+            ? "Kick issued without an explicit reason"
+            : command.moderation_reason;
+        const ModerationTarget identity_target{
+            ModerationTargetKind::identity, target_username, target_cid};
+        const auto entry_id = database_.add_moderation_entry(
+            ModerationAction::kick,
+            identity_target,
+            reason,
+            actor_username.empty() ? std::string_view("operator")
+                                   : std::string_view(actor_username),
+            duration);
+        moderation_lock.unlock();
 
-        send_all(target_fd,
-                 "IMSG " + AdcProtocol::escape_adc(
-                     command.action == UserSetAction::kick_user
-                         ? "You were kicked by an authorized operator"
-                         : "Your session was disconnected by an administrator") +
-                 "\n");
-        ::shutdown(target_fd, SHUT_RDWR);
-        if (command.action == UserSetAction::kick_user) {
-            const std::string event = "[kick] " + command.username +
-                " was kicked by " +
-                (actor_username.empty() ? std::string("operator")
-                                        : actor_username);
+        int target_socket = -1;
+        {
             std::lock_guard lock(clients_mutex_);
+            const auto target = clients_.find(target_fd);
+            if (target == clients_.end() || target->second.sid != target_sid) {
+                return {true, "kick recorded after target disconnected: id=" +
+                    std::to_string(entry_id)};
+            }
+            target_socket = ::dup(target_fd);
+            if (target_socket < 0) ::shutdown(target_fd, SHUT_RDWR);
+        }
+        if (target_socket >= 0) {
+            send_all(target_socket,
+                     "IMSG " + AdcProtocol::escape_adc(
+                         "You were kicked: " + reason) + "\n");
+            ::shutdown(target_socket, SHUT_RDWR);
+            ::close(target_socket);
+        }
+
+        const std::string event = "[kick] " + target_username +
+            " was kicked by " +
+            (actor_username.empty() ? std::string("operator")
+                                    : actor_username) +
+            ": " + reason;
+        std::vector<int> event_sockets;
+        {
+            std::lock_guard lock(clients_mutex_);
+            event_sockets.reserve(clients_.size());
             for (const auto& [fd, client] : clients_) {
                 if (!client.normal || fd == target_fd || client.policy.hide_kick ||
                     static_cast<std::int16_t>(actor_class) <=
                         client.policy.hide_kick_through_class) continue;
-                send_all(fd, "IMSG " + AdcProtocol::escape_adc(event) + "\n");
+                const int socket = ::dup(fd);
+                if (socket >= 0) event_sockets.push_back(socket);
             }
         }
-        return {true, std::string(
-            command.action == UserSetAction::kick_user
-                ? "user kicked: username="
-                : "user disconnected without kick: username=") +
-            command.username};
+        const auto event_message =
+            "IMSG " + AdcProtocol::escape_adc(event) + "\n";
+        for (const int socket : event_sockets) {
+            send_all(socket, event_message);
+            ::close(socket);
+        }
+        return {true, "user kicked: username=" + target_username +
+            " entry_id=" + std::to_string(entry_id) +
+            " duration_seconds=" + std::to_string(duration)};
+    }
+
+    if (command.action == UserSetAction::create_ban) {
+        std::unique_lock moderation_lock(moderation_mutex_);
+        struct MatchedSession {
+            int fd{-1};
+            std::string sid;
+            std::string username;
+            RuntimeUserPolicy policy;
+            UserClass effective_class{UserClass::regular};
+        };
+
+        std::string actor_username;
+        std::string actor_cid;
+        std::string actor_address;
+        std::optional<std::uint64_t> actor_share;
+        UserClass actor_class = UserClass::regular;
+        std::vector<MatchedSession> matched;
+        {
+            std::lock_guard lock(clients_mutex_);
+            const auto actor = clients_.find(sender_fd);
+            if (actor == clients_.end() || !actor->second.normal) {
+                return {false, "sender session not found"};
+            }
+            const auto actor_nick = client_username(actor->second);
+            if (actor_nick.has_value()) actor_username = *actor_nick;
+            actor_class = actor->second.policy.user_class;
+            actor_address = actor->second.remote_address;
+            const auto actor_cid_field = actor->second.inf_fields.find("ID");
+            if (actor_cid_field != actor->second.inf_fields.end()) {
+                actor_cid = actor_cid_field->second;
+            }
+            const auto actor_share_field = actor->second.inf_fields.find("SS");
+            if (actor_share_field != actor->second.inf_fields.end()) {
+                std::uint64_t parsed_share = 0;
+                const auto parsed = std::from_chars(
+                    actor_share_field->second.data(),
+                    actor_share_field->second.data() +
+                        actor_share_field->second.size(),
+                    parsed_share);
+                if (parsed.ec == std::errc{} &&
+                    parsed.ptr == actor_share_field->second.data() +
+                        actor_share_field->second.size()) {
+                    actor_share = parsed_share;
+                }
+            }
+            if (moderation_target_matches(
+                    command.moderation_target,
+                    actor_username,
+                    actor_cid,
+                    actor_address,
+                    actor_share)) {
+                return {false, "ban target includes the acting session"};
+            }
+
+            for (const auto& [fd, client] : clients_) {
+                if (!client.normal) continue;
+                const auto nick = client_username(client);
+                const auto cid_field = client.inf_fields.find("ID");
+                const auto share_field = client.inf_fields.find("SS");
+                std::optional<std::uint64_t> share;
+                if (share_field != client.inf_fields.end()) {
+                    std::uint64_t parsed_share = 0;
+                    const auto parsed = std::from_chars(
+                        share_field->second.data(),
+                        share_field->second.data() + share_field->second.size(),
+                        parsed_share);
+                    if (parsed.ec == std::errc{} &&
+                        parsed.ptr == share_field->second.data() +
+                            share_field->second.size()) share = parsed_share;
+                }
+                if (moderation_target_matches(
+                        command.moderation_target,
+                        nick.has_value() ? std::string_view(*nick)
+                                         : std::string_view{},
+                        cid_field == client.inf_fields.end()
+                            ? std::string_view{}
+                            : std::string_view(cid_field->second),
+                        client.remote_address,
+                        share)) {
+                    matched.push_back({
+                        fd,
+                        client.sid,
+                        nick.has_value() ? *nick : std::string{},
+                        client.policy,
+                        client.policy.user_class});
+                }
+            }
+        }
+
+        {
+            std::lock_guard lock(temporary_classes_mutex_);
+            const auto actor_temporary = temporary_classes_.find(actor_username);
+            if (actor_temporary != temporary_classes_.end()) {
+                actor_class = actor_temporary->second;
+            }
+            for (auto& target : matched) {
+                const auto temporary = temporary_classes_.find(target.username);
+                if (temporary != temporary_classes_.end()) {
+                    target.effective_class = temporary->second;
+                }
+            }
+        }
+        const auto settings = database_.hub_settings();
+        if (command.duration_seconds >
+            settings.maximum_temporary_ban_seconds) {
+            return {false, "ban duration exceeds key.bans"};
+        }
+        for (const auto& target : matched) {
+            if (static_cast<std::int16_t>(actor_class) <=
+                    target.policy.kick_protect_class ||
+                static_cast<std::int16_t>(actor_class) -
+                        static_cast<std::int16_t>(target.effective_class) <
+                    settings.kick_class_difference) {
+                return {false, "a matched session is protected from this actor"};
+            }
+        }
+        if (command.moderation_target.kind ==
+            ModerationTargetKind::nickname) {
+            const auto policy = database_.runtime_policy(
+                command.moderation_target.value);
+            auto effective_target_class = policy.user_class;
+            {
+                std::lock_guard lock(temporary_classes_mutex_);
+                const auto temporary = temporary_classes_.find(
+                    command.moderation_target.value);
+                if (temporary != temporary_classes_.end()) {
+                    effective_target_class = temporary->second;
+                }
+            }
+            if (policy.registered &&
+                (static_cast<std::int16_t>(actor_class) <=
+                     policy.kick_protect_class ||
+                 static_cast<std::int16_t>(actor_class) -
+                         static_cast<std::int16_t>(effective_target_class) <
+                     settings.kick_class_difference)) {
+                return {false, "registered target is protected from this actor"};
+            }
+        }
+
+        const auto entry_id = database_.add_moderation_entry(
+            ModerationAction::ban,
+            command.moderation_target,
+            command.moderation_reason,
+            actor_username,
+            command.duration_seconds);
+        moderation_lock.unlock();
+
+        std::size_t disconnected = 0;
+        std::vector<int> target_sockets;
+        target_sockets.reserve(matched.size());
+        for (const auto& candidate : matched) {
+            std::lock_guard lock(clients_mutex_);
+            const auto target = clients_.find(candidate.fd);
+            if (target == clients_.end() ||
+                target->second.sid != candidate.sid) continue;
+            const int socket = ::dup(candidate.fd);
+            if (socket >= 0) target_sockets.push_back(socket);
+            else ::shutdown(candidate.fd, SHUT_RDWR);
+            ++disconnected;
+        }
+        const auto ban_message =
+            "IMSG " + AdcProtocol::escape_adc(
+                "You were banned: " + command.moderation_reason) + "\n";
+        for (const int socket : target_sockets) {
+            send_all(socket, ban_message);
+            ::shutdown(socket, SHUT_RDWR);
+            ::close(socket);
+        }
+        return {true, "ban created: id=" + std::to_string(entry_id) +
+            " disconnected=" + std::to_string(disconnected)};
     }
 
     if (command.action == UserSetAction::change_class_temporarily) {
@@ -1173,41 +1524,68 @@ std::optional<std::string> Server::decode_adc_value(
 }
 
 void Server::broadcast(const std::string& message) {
-    std::lock_guard lock(clients_mutex_);
-    for (const auto& [fd, client] : clients_) {
-        if (!client.normal) continue;
-        send_all(fd, message);
+    std::vector<int> sockets;
+    {
+        std::lock_guard lock(clients_mutex_);
+        sockets.reserve(clients_.size());
+        for (const auto& [fd, client] : clients_) {
+            if (!client.normal) continue;
+            const int socket = ::dup(fd);
+            if (socket >= 0) sockets.push_back(socket);
+        }
+    }
+    for (const int socket : sockets) {
+        send_all(socket, message);
+        ::close(socket);
     }
 }
 
 void Server::broadcast_from(int sender_fd, const std::string& message) {
-    std::lock_guard lock(clients_mutex_);
-    const auto sender = clients_.find(sender_fd);
-    if (sender == clients_.end()) return;
-    for (const auto& [fd, client] : clients_) {
-        if (!client.normal) continue;
-        if (fd != sender_fd &&
-            static_cast<std::int16_t>(client.policy.user_class) <
-                sender->second.policy.hide_from_class) {
-            continue;
+    std::vector<int> sockets;
+    {
+        std::lock_guard lock(clients_mutex_);
+        const auto sender = clients_.find(sender_fd);
+        if (sender == clients_.end()) return;
+        sockets.reserve(clients_.size());
+        for (const auto& [fd, client] : clients_) {
+            if (!client.normal) continue;
+            if (fd != sender_fd &&
+                static_cast<std::int16_t>(client.policy.user_class) <
+                    sender->second.policy.hide_from_class) {
+                continue;
+            }
+            const int socket = ::dup(fd);
+            if (socket >= 0) sockets.push_back(socket);
         }
-        send_all(fd, message);
+    }
+    for (const int socket : sockets) {
+        send_all(socket, message);
+        ::close(socket);
     }
 }
 
 void Server::broadcast_current_inf(int sender_fd, bool remove_hidden) {
-    std::lock_guard lock(clients_mutex_);
-    const auto sender = clients_.find(sender_fd);
-    if (sender == clients_.end() || !sender->second.normal) return;
-    for (const auto& [fd, client] : clients_) {
-        if (!client.normal) continue;
-        const auto message = build_current_inf_locked(
-            sender->second, client.policy.user_class, fd == sender_fd);
-        if (!message.empty()) {
-            send_all(fd, message);
-        } else if (remove_hidden && fd != sender_fd) {
-            send_all(fd, "IQUI " + sender->second.sid + "\n");
+    std::vector<std::pair<int, std::string>> sends;
+    {
+        std::lock_guard lock(clients_mutex_);
+        const auto sender = clients_.find(sender_fd);
+        if (sender == clients_.end() || !sender->second.normal) return;
+        sends.reserve(clients_.size());
+        for (const auto& [fd, client] : clients_) {
+            if (!client.normal) continue;
+            auto message = build_current_inf_locked(
+                sender->second, client.policy.user_class, fd == sender_fd);
+            if (message.empty() && remove_hidden && fd != sender_fd) {
+                message = "IQUI " + sender->second.sid + "\n";
+            }
+            if (message.empty()) continue;
+            const int socket = ::dup(fd);
+            if (socket >= 0) sends.emplace_back(socket, std::move(message));
         }
+    }
+    for (const auto& [socket, message] : sends) {
+        send_all(socket, message);
+        ::close(socket);
     }
 }
 
@@ -1215,50 +1593,65 @@ void Server::route_direct(int sender_fd,
                           std::string_view target_sid,
                           const std::string& message,
                           bool echo_sender) {
-    std::lock_guard lock(clients_mutex_);
-
     int target_fd = -1;
-    const auto sender = clients_.find(sender_fd);
-    if (sender == clients_.end()) return;
-    for (const auto& [fd, client] : clients_) {
-        if (client.normal && client.sid == target_sid) {
-            if (fd != sender_fd &&
-                static_cast<std::int16_t>(client.policy.user_class) <
-                    sender->second.policy.hide_from_class) {
+    int target_socket = -1;
+    int sender_socket = -1;
+    {
+        std::lock_guard lock(clients_mutex_);
+        const auto sender = clients_.find(sender_fd);
+        if (sender == clients_.end()) return;
+        for (const auto& [fd, client] : clients_) {
+            if (client.normal && client.sid == target_sid) {
+                if (fd != sender_fd &&
+                    static_cast<std::int16_t>(client.policy.user_class) <
+                        sender->second.policy.hide_from_class) {
+                    break;
+                }
+                target_fd = fd;
+                target_socket = ::dup(fd);
                 break;
             }
-            target_fd = fd;
-            break;
+        }
+        if (echo_sender && sender_fd != target_fd && sender->second.normal) {
+            sender_socket = ::dup(sender_fd);
         }
     }
-
-    if (target_fd >= 0) {
-        send_all(target_fd, message);
+    if (target_socket >= 0) {
+        send_all(target_socket, message);
+        ::close(target_socket);
     }
-    if (echo_sender && sender_fd != target_fd) {
-        if (sender != clients_.end() && sender->second.normal) {
-            send_all(sender_fd, message);
-        }
+    if (sender_socket >= 0) {
+        send_all(sender_socket, message);
+        ::close(sender_socket);
     }
 }
 
 void Server::route_feature(int sender_fd, const AdcAction& action) {
-    std::lock_guard lock(clients_mutex_);
-    const auto sender = clients_.find(sender_fd);
-    if (sender == clients_.end()) return;
-    for (const auto& [fd, client] : clients_) {
-        if (!client.normal) continue;
-        if (fd != sender_fd &&
-            static_cast<std::int16_t>(client.policy.user_class) <
-                sender->second.policy.hide_from_class) {
-            continue;
+    std::vector<int> sockets;
+    {
+        std::lock_guard lock(clients_mutex_);
+        const auto sender = clients_.find(sender_fd);
+        if (sender == clients_.end()) return;
+        sockets.reserve(clients_.size());
+        for (const auto& [fd, client] : clients_) {
+            if (!client.normal) continue;
+            if (fd != sender_fd &&
+                static_cast<std::int16_t>(client.policy.user_class) <
+                    sender->second.policy.hide_from_class) {
+                continue;
+            }
+            if (!feature_match(client,
+                               action.required_features,
+                               action.excluded_features)) {
+                continue;
+            }
+            const int socket = ::dup(fd);
+            if (socket >= 0) sockets.push_back(socket);
         }
-        if (!feature_match(client,
-                           action.required_features,
-                           action.excluded_features)) {
-            continue;
-        }
-        send_all(fd, action.routed_message);
+    }
+    for (const int socket : sockets) {
+        send_all(socket, action.routed_message);
+        ::close(socket);
     }
 }
 
@@ -1452,18 +1845,23 @@ std::string Server::next_sid() {
 }
 
 bool Server::send_all(int fd, const std::string& message) {
+    std::lock_guard send_lock(send_mutex_);
     std::size_t offset = 0;
     while (offset < message.size()) {
         const auto sent =
             ::send(fd,
                    message.data() + offset,
                    message.size() - offset,
-                   MSG_NOSIGNAL);
+                   MSG_NOSIGNAL | MSG_DONTWAIT);
         if (sent < 0) {
             if (errno == EINTR) continue;
+            ::shutdown(fd, SHUT_RDWR);
             return false;
         }
-        if (sent == 0) return false;
+        if (sent == 0) {
+            ::shutdown(fd, SHUT_RDWR);
+            return false;
+        }
         offset += static_cast<std::size_t>(sent);
     }
     return true;

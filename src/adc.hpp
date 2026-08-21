@@ -1,6 +1,9 @@
 /*
     adc.hpp
 
+    v0.0.08:
+        - document immutable post-login identity/share fields for moderation safety
+
     v0.0.06:
         - document ncdc-compatible SUP-only BASE/TIGR negotiation
 

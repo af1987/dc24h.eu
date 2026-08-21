@@ -1,6 +1,11 @@
 /*
     adc_tests.cpp
 
+    v0.0.08:
+        - verify canonical 0.0.08 release metadata
+        - reject duplicate and post-login mutable identity fields
+        - verify field-specific rejection details for share changes
+
     v0.0.07:
         - verify canonical 0.0.07 runtime release metadata
 
@@ -89,6 +94,29 @@ void run_protocol_tests() {
     assert(spoof.disconnect);
     assert(!spoof.direct_messages.empty());
 
+    const auto rename = protocol.handle_line(
+        "BINF AAAB NIrenamed", "AAAB", "127.0.0.1", session);
+    assert(!rename.inf_update);
+    assert(!rename.direct_messages.empty());
+
+    const auto share_change = protocol.handle_line(
+        "BINF AAAB SS42", "AAAB", "127.0.0.1", session);
+    assert(!share_change.inf_update);
+    assert(!share_change.direct_messages.empty());
+    assert(share_change.direct_messages.front().find("FBSS") !=
+           std::string::npos);
+
+    AdcSession duplicate_session;
+    protocol.handle_line(
+        "HSUP ADBASE ADTIGR", "AAAD", "127.0.0.1", duplicate_session);
+    const auto duplicate_identity = protocol.handle_line(
+        "BINF AAAD "
+        "IDW6AIUW3CLDF6OGHNVE4JPDDJ2P74IWRCF2O36TA "
+        "PDAAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFY "
+        "NIone NItwo",
+        "AAAD", "127.0.0.1", duplicate_session);
+    assert(duplicate_identity.disconnect);
+
     AdcSession ncdc_session;
     const auto ncdc_handshake = protocol.handle_line(
         "HSUP ADBASE ADTIGR", "AAAC", "127.0.0.1", ncdc_session);
@@ -106,12 +134,12 @@ void run_protocol_tests() {
 }  // namespace dc24h::tests
 
 int main() {
-    assert(dc24h::version() == "0.0.07");
-    assert(dc24h::release_name() == "dc24h.eu-v0.0.07");
+    assert(dc24h::version() == "0.0.08");
+    assert(dc24h::release_name() == "dc24h.eu-v0.0.08");
     assert(dc24h::project_author() == "gpt-5.6-sol");
     assert(dc24h::project_date() == "2026-08-21");
     dc24h::tests::run_hash_tests();
     dc24h::tests::run_protocol_tests();
-    std::cout << "dc24h.eu v0.0.07 tests passed\n";
+    std::cout << "dc24h.eu v0.0.08 tests passed\n";
     return 0;
 }

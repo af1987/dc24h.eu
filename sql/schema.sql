@@ -1,5 +1,10 @@
 -- schema.sql
 --
+-- v0.0.08:
+--   - add auditable kick and ban entries with expiry and soft revocation
+--   - seed key.kicks rejoin delay and key.bans temporary maximum
+--   - index active target, secondary identity and action lookups
+--
 -- v0.0.07:
 --   - add account binding, profile, kick visibility and login telemetry columns
 --   - seed class, nickname, auto-registration and password policy settings
@@ -119,6 +124,32 @@ CREATE TABLE IF NOT EXISTS user_timed_policies (
         FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS moderation_entries (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    action_type VARCHAR(8) NOT NULL,
+    target_type VARCHAR(16) NOT NULL,
+    target_value VARCHAR(255) NOT NULL,
+    secondary_value VARCHAR(255) NOT NULL DEFAULT '',
+    reason VARCHAR(1000) NOT NULL,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    expires_at TIMESTAMP(6) NULL,
+    revoked_at TIMESTAMP(6) NULL,
+    revoked_by VARCHAR(64) NULL,
+    revoke_reason VARCHAR(1000) NULL,
+    INDEX idx_moderation_active (revoked_at, expires_at, action_type),
+    INDEX idx_moderation_target
+        (target_type, target_value, revoked_at, expires_at),
+    INDEX idx_moderation_secondary
+        (target_type, secondary_value, revoked_at, expires_at),
+    INDEX idx_moderation_action (action_type, id),
+    CONSTRAINT chk_moderation_action
+        CHECK (action_type IN ('kick', 'ban')),
+    CONSTRAINT chk_moderation_target
+        CHECK (target_type IN
+            ('identity', 'nick', 'cid', 'ip', 'range', 'prefix', 'share'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS settings (
     setting_key VARCHAR(128) NOT NULL PRIMARY KEY,
     setting_value TEXT NOT NULL,
@@ -127,6 +158,8 @@ CREATE TABLE IF NOT EXISTS settings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT IGNORE INTO settings(setting_key, setting_value) VALUES
+    ('key.kicks', '300'),
+    ('key.bans', '31536000'),
     ('key.class.permission.register.difference', '2'),
     ('key.class.permission.kick.difference', '0'),
     ('key.class.permission.pm.difference', '10'),

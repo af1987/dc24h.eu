@@ -3,6 +3,10 @@
 
     - user command and password helper regression tests
 
+        v0.0.08:
+            - test key.kicks and key.bans values and operation namespaces
+            - test all target matchers, duration boundaries and UTF-8 nicknames
+
         v0.0.07:
             - test every class, nickname and auto-registration setting key
             - test +regme and account profile/security keys
@@ -39,6 +43,7 @@
 
 #include "user.hpp"
 #include "hub_settings.hpp"
+#include "moderation.hpp"
 #include "user_commands.hpp"
 
 #include <array>
@@ -278,7 +283,9 @@ void run_user_command_tests() {
     assert(prefixed_auth_ip.has_value());
     assert(prefixed_auth_ip->username == "[AUTO]tester");
 
-    constexpr std::array<const char*, 28> setting_commands{{
+    constexpr std::array<const char*, 30> setting_commands{{
+        "!set key.kicks=[300]",
+        "!set key.bans=[31536000]",
         "!set key.class.permission.register.difference=[2]",
         "!set key.class.permission.kick.difference=[0]",
         "!set key.class.permission.pm.difference=[10]",
@@ -351,7 +358,152 @@ void run_user_command_tests() {
     assert(hide_kick_class.has_value());
     assert(hide_kick_class->action == UserSetAction::set_hide_kick_class);
 
+    const auto kick_entry = UserCommandProcessor::parse(
+        "!set key.kicks.add=[Alice.User|2w|Forbidden share]", error);
+    assert(kick_entry.has_value());
+    assert(kick_entry->action == UserSetAction::kick_user);
+    assert(kick_entry->username == "Alice.User");
+    assert(kick_entry->duration_seconds == 1209600U);
+    assert(kick_entry->moderation_reason == "Forbidden share");
+
+    const auto default_kick = UserCommandProcessor::parse(
+        "!set key.kicks.add=[alice|Read the rules]", error);
+    assert(default_kick.has_value());
+    assert(default_kick->duration_seconds == 0U);
+
+    const auto ban_entry = UserCommandProcessor::parse(
+        "!set key.bans.add=[range|192.0.2.77/24|1M|Repeated abuse]",
+        error);
+    assert(ban_entry.has_value());
+    assert(ban_entry->action == UserSetAction::create_ban);
+    assert(ban_entry->moderation_target.kind ==
+           ModerationTargetKind::ipv4_range);
+    assert(ban_entry->moderation_target.value == "192.0.2.0");
+    assert(ban_entry->moderation_target.secondary_value == "192.0.2.255");
+    assert(ban_entry->duration_seconds == 2592000U);
+
+    const auto permanent_ban = UserCommandProcessor::parse(
+        "!set key.bans.add=[nick|blocked-user|permanent|Repeated abuse]",
+        error);
+    assert(permanent_ban.has_value());
+    assert(permanent_ban->duration_seconds == 0U);
+
+    const auto revoke_ban = UserCommandProcessor::parse(
+        "!set key.bans.remove=[42|Appeal accepted]", error);
+    assert(revoke_ban.has_value());
+    assert(revoke_ban->action == UserSetAction::revoke_ban);
+    assert(revoke_ban->moderation_id == 42U);
+
+    const auto ban_info = UserCommandProcessor::parse(
+        "!set key.bans.info=[42]", error);
+    assert(ban_info.has_value());
+    assert(ban_info->action == UserSetAction::show_ban_info);
+
+    const auto ban_list = UserCommandProcessor::parse(
+        "!set key.bans.list=[20]", error);
+    assert(ban_list.has_value());
+    assert(ban_list->action == UserSetAction::list_bans);
+    const auto kick_list = UserCommandProcessor::parse(
+        "!set key.kicks.list=[20]", error);
+    assert(kick_list.has_value());
+    assert(kick_list->action == UserSetAction::list_kicks);
+    const auto revoke_kick = UserCommandProcessor::parse(
+        "!set key.kicks.remove=[41|Entered in error]", error);
+    assert(revoke_kick.has_value());
+    assert(revoke_kick->action == UserSetAction::revoke_kick);
+    assert(revoke_kick->moderation_id == 41U);
+    const auto kick_info = UserCommandProcessor::parse(
+        "!set key.kicks.info=[41]", error);
+    assert(kick_info.has_value());
+    assert(kick_info->action == UserSetAction::show_kick_info);
+
     HubSettings settings;
+    assert(settings.kick_rejoin_delay_seconds == 300U);
+    assert(settings.maximum_temporary_ban_seconds == 31536000U);
+    const auto kick_setting = normalize_hub_setting("key.kicks", "600", error);
+    assert(kick_setting.has_value());
+    assert(apply_hub_setting(settings, "key.kicks", *kick_setting));
+    assert(settings.kick_rejoin_delay_seconds == 600U);
+    assert(!normalize_hub_setting("key.kicks", "59", error).has_value());
+    assert(normalize_hub_setting("key.kicks", "86400", error).has_value());
+    assert(normalize_hub_setting("key.bans", "60", error).has_value());
+    assert(!normalize_hub_setting("key.bans", "31536001", error).has_value());
+
+    const auto range = normalize_ban_target(
+        "range", "198.51.100.10..198.51.100.20", error);
+    assert(range.has_value());
+    assert(moderation_target_matches(
+        *range, "user", "", "198.51.100.10", std::nullopt));
+    assert(moderation_target_matches(
+        *range, "user", "", "198.51.100.20", std::nullopt));
+    assert(!moderation_target_matches(
+        *range, "user", "", "198.51.100.21", std::nullopt));
+    const auto prefix = normalize_ban_target("prefix", "Bot-", error);
+    assert(prefix.has_value());
+    assert(moderation_target_matches(
+        *prefix, "bot-123", "", "127.0.0.1", std::nullopt));
+    const auto nickname = normalize_ban_target("nick", "Alice", error);
+    assert(nickname.has_value());
+    assert(moderation_target_matches(
+        *nickname, "alice", "", "127.0.0.1", std::nullopt));
+    const auto ipv4 = normalize_ban_target("ip", "203.0.113.9", error);
+    assert(ipv4.has_value());
+    assert(moderation_target_matches(
+        *ipv4, "user", "", "203.0.113.9", std::nullopt));
+    assert(!moderation_target_matches(
+        *ipv4, "user", "", "203.0.113.10", std::nullopt));
+    constexpr std::string_view cid_value =
+        "W6AIUW3CLDF6OGHNVE4JPDDJ2P74IWRCF2O36TA";
+    const auto cid = normalize_ban_target("cid", cid_value, error);
+    assert(cid.has_value());
+    assert(moderation_target_matches(
+        *cid, "user", cid_value, "127.0.0.1", std::nullopt));
+    const auto share_target = normalize_ban_target("share", "4096", error);
+    assert(share_target.has_value());
+    assert(moderation_target_matches(
+        *share_target, "user", "", "127.0.0.1", 4096U));
+    const ModerationTarget identity{
+        ModerationTargetKind::identity, "Alice", std::string(cid_value)};
+    assert(moderation_target_matches(
+        identity, "alice", "", "127.0.0.1", std::nullopt));
+    assert(moderation_target_matches(
+        identity, "other", cid_value, "127.0.0.1", std::nullopt));
+    assert(!moderation_target_matches(
+        identity, "other", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "127.0.0.1", std::nullopt));
+
+    const ModerationEntry active_entry{
+        1U,
+        ModerationAction::ban,
+        *prefix,
+        "reason",
+        "actor",
+        100,
+        200,
+        0,
+        {},
+        {}};
+    assert(moderation_entry_active(active_entry, 150));
+    assert(!moderation_entry_active(active_entry, 200));
+    auto permanent_entry = active_entry;
+    permanent_entry.expires_at = 0;
+    assert(moderation_entry_active(permanent_entry, 1000000));
+    permanent_entry.revoked_at = 150;
+    assert(!moderation_entry_active(permanent_entry, 151));
+
+    assert(parse_moderation_duration("1s", error) == 1U);
+    assert(parse_moderation_duration("1y", error) == 31536000U);
+    assert(!parse_moderation_duration("2y", error).has_value());
+    assert(!parse_moderation_duration(
+        "18446744073709551615y", error).has_value());
+
+    const auto invalid_kick_duration = UserCommandProcessor::parse(
+        "!set key.kicks.add=[alice|permanent|reason]", error);
+    assert(!invalid_kick_duration.has_value());
+    assert(error == "kick duration cannot be permanent");
+    assert(!normalize_ban_target(
+        "range", "192.0.2.20..192.0.2.10", error).has_value());
+
     settings.nick_length_minimum = 3;
     settings.nick_length_maximum = 12;
     settings.nick_prefix = "[US],[EU]";
@@ -362,6 +514,15 @@ void run_user_command_tests() {
     settings.nick_characters_allowed = "abcdefghijklmnopqrstuvwxyz";
     assert(nickname_allowed("alice", settings, error));
     assert(!nickname_allowed("alice1", settings, error));
+    settings.nick_characters_allowed.clear();
+    settings.nick_length_maximum = 64;
+    assert(!nickname_allowed("alice\tadmin", settings, error));
+    assert(!nickname_allowed("alice|admin", settings, error));
+    std::string valid_multibyte;
+    valid_multibyte.reserve(66U);
+    for (std::size_t index = 0; index < 33U; ++index) valid_multibyte += "ą";
+    assert(nickname_allowed(valid_multibyte, settings, error));
+    assert(valid_moderation_nickname(valid_multibyte));
 
     const auto invalid_flag = UserCommandProcessor::parse(
         "!set key.user.hide.share.username=[alice.2]", error);

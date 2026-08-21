@@ -3,6 +3,10 @@
 
     - persistent hub policy model and validation helpers
 
+        v0.0.08:
+            - define kick rejoin delay and temporary-ban maximum settings
+            - retain moderation-safe nickname validation at admission
+
         v0.0.07:
             - define class permission and minimum-class settings
             - define nickname, auto-registration and password policy settings
@@ -24,6 +28,9 @@
 namespace dc24h {
 
 struct HubSettings {
+    std::uint32_t kick_rejoin_delay_seconds{300};
+    std::uint32_t maximum_temporary_ban_seconds{31536000};
+
     std::int16_t register_class_difference{2};
     std::int16_t kick_class_difference{0};
     std::int16_t pm_class_difference{10};

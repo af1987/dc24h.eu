@@ -3,6 +3,11 @@
 
     - hub-local user management command model
 
+        v0.0.08:
+            - add typed kick and ban command actions with audit operations
+            - carry normalized moderation targets, reasons and entry IDs
+            - model kick and ban info/removal as symmetric operations
+
         v0.0.07:
             - add hub-setting and self-registration actions
             - add account IP, email, public-note and kick-message actions
@@ -35,6 +40,7 @@
 
 #pragma once
 
+#include "moderation.hpp"
 #include "user.hpp"
 
 #include <cstdint>
@@ -81,7 +87,14 @@ enum class UserSetAction {
     set_email,
     set_public_note,
     set_hide_kick,
-    set_hide_kick_class
+    set_hide_kick_class,
+    create_ban,
+    revoke_kick,
+    show_kick_info,
+    revoke_ban,
+    show_ban_info,
+    list_bans,
+    list_kicks
 };
 
 struct UserSetCommand {
@@ -96,6 +109,9 @@ struct UserSetCommand {
     std::string setting_key;
     std::string setting_value;
     std::string actor_username;
+    ModerationTarget moderation_target;
+    std::string moderation_reason;
+    std::uint64_t moderation_id{0};
     std::uint64_t duration_seconds{0};
     bool enabled{false};
 };
