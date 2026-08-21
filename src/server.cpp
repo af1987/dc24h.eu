@@ -1,6 +1,11 @@
 /*
     server.cpp
 
+    v0.0.06:
+        - enforce timed chat, PM, search and download routing restrictions
+        - add protected kick and non-punitive disconnect operations
+        - filter user visibility, share and ADC operator CT flags
+
     v0.0.05:
         - execute the complete private key.user administration command set
         - add online IP/hostname, exact-IP, range and subnet queries
@@ -28,7 +33,7 @@
         - support systemd-friendly graceful shutdown
 
     Author: gpt-5.6-sol
-    Date: 2026-08-20
+    Date: 2026-08-21
 */
 
 #include "server.hpp"
@@ -45,6 +50,7 @@
 #include <cerrno>
 #include <charconv>
 #include <cstring>
+#include <ctime>
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
@@ -86,6 +92,7 @@ int Server::run(const std::atomic_bool& stop_requested) {
               << ':' << config_.listen_port << '\n';
 
     while (!stop_requested.load()) {
+        expire_client_policies();
         pollfd descriptor{listen_fd_, POLLIN, 0};
         const int poll_result = ::poll(&descriptor, 1, 1000);
 
@@ -294,7 +301,21 @@ bool Server::finish_identification(
     int client_fd,
     const std::vector<std::pair<std::string, std::string>>& fields) {
     std::vector<std::string> existing_users;
-    std::string own_inf;
+    std::string encoded_nick;
+    for (const auto& [name, value] : fields) {
+        if (name == "NI") encoded_nick = value;
+    }
+    const auto decoded_nick = decode_adc_value(encoded_nick);
+    RuntimeUserPolicy policy;
+    try {
+        if (decoded_nick.has_value()) {
+            policy = database_.runtime_policy(*decoded_nick);
+        }
+    } catch (const std::exception& ex) {
+        std::cerr << "database policy error: " << ex.what() << '\n';
+        send_all(client_fd, "ISTA 500 Database\\spolicy\\serror\n");
+        return false;
+    }
 
     {
         std::lock_guard lock(clients_mutex_);
@@ -327,7 +348,9 @@ bool Server::finish_identification(
                 return false;
             }
 
-            existing_users.push_back(build_current_inf_locked(client));
+            const auto visible_inf = build_current_inf_locked(
+                client, policy.user_class, false);
+            if (!visible_inf.empty()) existing_users.push_back(visible_inf);
         }
 
         for (const auto& [name, value] : fields) {
@@ -342,14 +365,14 @@ bool Server::finish_identification(
                 ? std::unordered_set<std::string>{}
                 : parse_feature_list(su->second);
         current->second.normal = true;
-        own_inf = build_current_inf_locked(current->second);
+        current->second.policy = std::move(policy);
     }
 
     for (const auto& inf : existing_users) {
         if (!send_all(client_fd, inf)) return false;
     }
 
-    broadcast(own_inf);
+    broadcast_current_inf(client_fd);
     return true;
 }
 
@@ -377,12 +400,18 @@ void Server::route_action(int sender_fd, const AdcAction& action) {
     if (handle_user_set_command(sender_fd, action)) {
         return;
     }
+    if (!enforce_sender_policy(sender_fd, action)) return;
+    if (handle_opchat_command(sender_fd, action)) return;
+    if (action.inf_update && action.route_mode == RouteMode::broadcast) {
+        broadcast_current_inf(sender_fd);
+        return;
+    }
 
     switch (action.route_mode) {
         case RouteMode::none:
             break;
         case RouteMode::broadcast:
-            broadcast(action.routed_message);
+            broadcast_from(sender_fd, action.routed_message);
             break;
         case RouteMode::direct:
             route_direct(sender_fd,
@@ -397,9 +426,80 @@ void Server::route_action(int sender_fd, const AdcAction& action) {
                          true);
             break;
         case RouteMode::feature:
-            route_feature(action);
+            route_feature(sender_fd, action);
             break;
     }
+}
+
+bool Server::handle_opchat_command(int sender_fd,
+                                   const AdcAction& action) {
+    if (action.route_mode != RouteMode::broadcast) return false;
+    const auto text = extract_bmsg_text(action.routed_message);
+    if (!text.has_value() || !text->starts_with("!opchat ")) return false;
+    const auto message = text->substr(8U);
+    if (message.empty()) {
+        send_all(sender_fd, "IMSG [OPChat]\\smessage\\srequired\n");
+        return true;
+    }
+
+    std::lock_guard lock(clients_mutex_);
+    const auto sender = clients_.find(sender_fd);
+    if (sender == clients_.end()) return true;
+    const bool sender_allowed =
+        static_cast<std::int16_t>(sender->second.policy.user_class) >= 3 ||
+        has_active_policy(sender->second, "opchat");
+    if (!sender_allowed) {
+        send_all(sender_fd, "IMSG [OPChat]\\saccess\\sdenied\n");
+        return true;
+    }
+    const auto nick = client_username(sender->second);
+    const std::string response = "[OPChat] " +
+        (nick.has_value() ? *nick : sender->second.sid) + ": " + message;
+    for (const auto& [fd, client] : clients_) {
+        if (!client.normal) continue;
+        if (static_cast<std::int16_t>(client.policy.user_class) >= 3 ||
+            has_active_policy(client, "opchat")) {
+            send_all(fd, "IMSG " + AdcProtocol::escape_adc(response) + "\n");
+        }
+    }
+    return true;
+}
+
+bool Server::enforce_sender_policy(int sender_fd,
+                                   const AdcAction& action) {
+    if (action.routed_message.size() < 4U) return true;
+
+    ClientInfo sender;
+    {
+        std::lock_guard lock(clients_mutex_);
+        const auto found = clients_.find(sender_fd);
+        if (found == clients_.end()) return false;
+        sender = found->second;
+    }
+
+    const std::string_view fourcc(action.routed_message.data(), 4U);
+    std::string restriction;
+    if (fourcc == "BMSG" &&
+        (has_active_policy(sender, "gag") ||
+         has_active_policy(sender, "no_chat"))) {
+        restriction = "public chat is restricted";
+    } else if ((fourcc == "DMSG" || fourcc == "EMSG") &&
+               (has_active_policy(sender, "no_chat") ||
+                has_active_policy(sender, "no_pm"))) {
+        restriction = "private messages are restricted";
+    } else if ((fourcc.substr(1) == "SCH") &&
+               has_active_policy(sender, "no_search")) {
+        restriction = "search is restricted";
+    } else if ((fourcc.substr(1) == "CTM" || fourcc.substr(1) == "RCM") &&
+               has_active_policy(sender, "no_download")) {
+        restriction = "downloads are restricted";
+    }
+
+    if (restriction.empty()) return true;
+    send_all(sender_fd,
+             "IMSG " + AdcProtocol::escape_adc(
+                 "[restriction] " + restriction) + "\n");
+    return false;
 }
 
 bool Server::handle_user_set_command(int sender_fd,
@@ -444,7 +544,7 @@ bool Server::handle_user_set_command(int sender_fd,
         send_all(sender_fd,
                  "IMSG " +
                      AdcProtocol::escape_adc(
-                         "[user] rejected: management commands are loopback-only in v0.0.05") +
+                         "[user] rejected: management commands are loopback-only in v0.0.06") +
                      "\n");
         return true;
     }
@@ -469,8 +569,38 @@ bool Server::handle_user_set_command(int sender_fd,
             return true;
         }
 
+        if (parsed->action == UserSetAction::set_self_visibility) {
+            parsed->username = *nick;
+            const auto account = database_.runtime_policy(*nick);
+            if (!account.registered || !account.enabled) {
+                send_all(sender_fd,
+                         "IMSG " + AdcProtocol::escape_adc(
+                             "[user] error: enabled registered account required") +
+                         "\n");
+                return true;
+            }
+            const auto result = user_commands_.execute(*parsed);
+            if (result.success) refresh_client_policy(*nick);
+            const std::string response = std::string("[visibility] ") +
+                (result.success ? "ok: " : "error: ") + result.message;
+            send_all(sender_fd,
+                     "IMSG " + AdcProtocol::escape_adc(response) + "\n");
+            return true;
+        }
+
         const auto user_class =
             database_.user_class_for_username(*nick);
+
+        const auto actor_policy = database_.runtime_policy(*nick);
+        const auto actor_has_policy = [&](std::string_view key) {
+            for (const auto& policy : actor_policy.timed_policies) {
+                if (policy.policy_key == key &&
+                    policy.expires_at > static_cast<std::int64_t>(std::time(nullptr))) {
+                    return true;
+                }
+            }
+            return false;
+        };
 
         const auto temporary_class = temporary_class_for(*nick);
 
@@ -481,6 +611,18 @@ bool Server::handle_user_set_command(int sender_fd,
             effective_class.has_value() &&
             (*effective_class == UserClass::admin ||
              *effective_class == UserClass::master);
+
+        if (!authorized && parsed->action == UserSetAction::kick_user &&
+            actor_has_policy("can_kick")) {
+            authorized = true;
+        }
+        if (!authorized &&
+            (parsed->action == UserSetAction::create_user ||
+             parsed->action == UserSetAction::create_user_without_password) &&
+            actor_has_policy("can_register") &&
+            static_cast<std::int16_t>(parsed->user_class) <= 1) {
+            authorized = true;
+        }
 
         if (!authorized && !database_.has_any_enabled_users()) {
             authorized =
@@ -499,8 +641,11 @@ bool Server::handle_user_set_command(int sender_fd,
 
         const auto result = UserCommandProcessor::requires_live_sessions(
                                 parsed->action)
-            ? execute_live_user_command(*parsed)
+            ? execute_live_user_command(sender_fd, *parsed)
             : user_commands_.execute(*parsed);
+        if (result.success && !parsed->username.empty()) {
+            refresh_client_policy(parsed->username);
+        }
         if (result.success && parsed->action == UserSetAction::remove_user) {
             std::lock_guard lock(temporary_classes_mutex_);
             temporary_classes_.erase(parsed->username);
@@ -523,7 +668,62 @@ bool Server::handle_user_set_command(int sender_fd,
 }
 
 UserSetResult Server::execute_live_user_command(
+    int sender_fd,
     const UserSetCommand& command) {
+    if (command.action == UserSetAction::disconnect_user ||
+        command.action == UserSetAction::kick_user) {
+        int target_fd = -1;
+        std::string actor_username;
+        UserClass actor_class = UserClass::regular;
+        RuntimeUserPolicy target_policy;
+        {
+            std::lock_guard lock(clients_mutex_);
+            const auto actor = clients_.find(sender_fd);
+            if (actor == clients_.end()) return {false, "sender session not found"};
+            const auto actor_nick = client_username(actor->second);
+            if (actor_nick.has_value()) actor_username = *actor_nick;
+            actor_class = actor->second.policy.user_class;
+
+            for (const auto& [fd, client] : clients_) {
+                if (!client.normal) continue;
+                const auto target_nick = client_username(client);
+                if (target_nick.has_value() &&
+                    *target_nick == command.username) {
+                    target_fd = fd;
+                    target_policy = client.policy;
+                    break;
+                }
+            }
+        }
+        if (target_fd < 0) return {false, "user is not online"};
+        if (target_fd == sender_fd && command.action == UserSetAction::kick_user) {
+            return {false, "cannot kick your own session"};
+        }
+
+        if (!actor_username.empty()) {
+            const auto temporary = temporary_class_for(actor_username);
+            if (temporary.has_value()) actor_class = *temporary;
+        }
+        if (command.action == UserSetAction::kick_user &&
+            static_cast<std::int16_t>(actor_class) <=
+                target_policy.kick_protect_class) {
+            return {false, "target is protected from this actor class"};
+        }
+
+        send_all(target_fd,
+                 "IMSG " + AdcProtocol::escape_adc(
+                     command.action == UserSetAction::kick_user
+                         ? "You were kicked by an authorized operator"
+                         : "Your session was disconnected by an administrator") +
+                 "\n");
+        ::shutdown(target_fd, SHUT_RDWR);
+        return {true, std::string(
+            command.action == UserSetAction::kick_user
+                ? "user kicked: username="
+                : "user disconnected without kick: username=") +
+            command.username};
+    }
+
     if (command.action == UserSetAction::change_class_temporarily) {
         const auto details = database_.user_details(command.username);
         if (!details.has_value()) {
@@ -743,6 +943,37 @@ void Server::broadcast(const std::string& message) {
     }
 }
 
+void Server::broadcast_from(int sender_fd, const std::string& message) {
+    std::lock_guard lock(clients_mutex_);
+    const auto sender = clients_.find(sender_fd);
+    if (sender == clients_.end()) return;
+    for (const auto& [fd, client] : clients_) {
+        if (!client.normal) continue;
+        if (fd != sender_fd &&
+            static_cast<std::int16_t>(client.policy.user_class) <
+                sender->second.policy.hide_from_class) {
+            continue;
+        }
+        send_all(fd, message);
+    }
+}
+
+void Server::broadcast_current_inf(int sender_fd, bool remove_hidden) {
+    std::lock_guard lock(clients_mutex_);
+    const auto sender = clients_.find(sender_fd);
+    if (sender == clients_.end() || !sender->second.normal) return;
+    for (const auto& [fd, client] : clients_) {
+        if (!client.normal) continue;
+        const auto message = build_current_inf_locked(
+            sender->second, client.policy.user_class, fd == sender_fd);
+        if (!message.empty()) {
+            send_all(fd, message);
+        } else if (remove_hidden && fd != sender_fd) {
+            send_all(fd, "IQUI " + sender->second.sid + "\n");
+        }
+    }
+}
+
 void Server::route_direct(int sender_fd,
                           std::string_view target_sid,
                           const std::string& message,
@@ -750,8 +981,15 @@ void Server::route_direct(int sender_fd,
     std::lock_guard lock(clients_mutex_);
 
     int target_fd = -1;
+    const auto sender = clients_.find(sender_fd);
+    if (sender == clients_.end()) return;
     for (const auto& [fd, client] : clients_) {
         if (client.normal && client.sid == target_sid) {
+            if (fd != sender_fd &&
+                static_cast<std::int16_t>(client.policy.user_class) <
+                    sender->second.policy.hide_from_class) {
+                break;
+            }
             target_fd = fd;
             break;
         }
@@ -761,17 +999,23 @@ void Server::route_direct(int sender_fd,
         send_all(target_fd, message);
     }
     if (echo_sender && sender_fd != target_fd) {
-        const auto sender = clients_.find(sender_fd);
         if (sender != clients_.end() && sender->second.normal) {
             send_all(sender_fd, message);
         }
     }
 }
 
-void Server::route_feature(const AdcAction& action) {
+void Server::route_feature(int sender_fd, const AdcAction& action) {
     std::lock_guard lock(clients_mutex_);
+    const auto sender = clients_.find(sender_fd);
+    if (sender == clients_.end()) return;
     for (const auto& [fd, client] : clients_) {
         if (!client.normal) continue;
+        if (fd != sender_fd &&
+            static_cast<std::int16_t>(client.policy.user_class) <
+                sender->second.policy.hide_from_class) {
+            continue;
+        }
         if (!feature_match(client,
                            action.required_features,
                            action.excluded_features)) {
@@ -802,16 +1046,107 @@ void Server::join_workers() {
 }
 
 std::string Server::build_current_inf_locked(
-    const ClientInfo& client) const {
+    const ClientInfo& client,
+    UserClass recipient_class,
+    bool recipient_is_self) const {
+    if (!recipient_is_self &&
+        static_cast<std::int16_t>(recipient_class) <
+            client.policy.hide_from_class) {
+        return {};
+    }
+
+    const bool hide_share = client.policy.hide_share ||
+        has_active_policy(client, "hide_share");
     std::string output = "BINF " + client.sid;
     for (const auto& [name, value] : client.inf_fields) {
         if (name == "PD") continue;
+        if (hide_share && (name == "SS" || name == "SF" || name == "SL")) {
+            continue;
+        }
         output.push_back(' ');
         output += name;
+        if (client.policy.hide_operator_key && name == "CT") {
+            unsigned int client_type = 0;
+            const auto parsed = std::from_chars(
+                value.data(), value.data() + value.size(), client_type);
+            if (parsed.ec == std::errc{} &&
+                parsed.ptr == value.data() + value.size()) {
+                client_type &= ~28U;
+                output += std::to_string(client_type);
+                continue;
+            }
+        }
         output += value;
     }
     output.push_back('\n');
     return output;
+}
+
+bool Server::has_active_policy(const ClientInfo& client,
+                               std::string_view policy_key) noexcept {
+    const auto now = static_cast<std::int64_t>(std::time(nullptr));
+    for (const auto& policy : client.policy.timed_policies) {
+        if (policy.policy_key == policy_key && policy.expires_at > now) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<std::string> Server::client_username(
+    const ClientInfo& client) {
+    const auto nick = client.inf_fields.find("NI");
+    if (nick == client.inf_fields.end()) return std::nullopt;
+    return decode_adc_value(nick->second);
+}
+
+void Server::refresh_client_policy(std::string_view username) {
+    RuntimeUserPolicy policy;
+    try {
+        policy = database_.runtime_policy(username);
+    } catch (const std::exception& ex) {
+        std::cerr << "database policy refresh error: " << ex.what() << '\n';
+        return;
+    }
+
+    std::vector<int> changed_clients;
+    {
+        std::lock_guard lock(clients_mutex_);
+        for (auto& [fd, client] : clients_) {
+            const auto nick = client_username(client);
+            if (nick.has_value() && *nick == username) {
+                client.policy = policy;
+                changed_clients.push_back(fd);
+            }
+        }
+    }
+    for (const int fd : changed_clients) {
+        broadcast_current_inf(fd, true);
+    }
+}
+
+void Server::expire_client_policies() {
+    const auto now = static_cast<std::int64_t>(std::time(nullptr));
+    std::vector<int> share_visibility_changed;
+    {
+        std::lock_guard lock(clients_mutex_);
+        for (auto& [fd, client] : clients_) {
+            auto& policies = client.policy.timed_policies;
+            bool share_expired = false;
+            for (auto iterator = policies.begin(); iterator != policies.end();) {
+                if (iterator->expires_at > now) {
+                    ++iterator;
+                    continue;
+                }
+                if (iterator->policy_key == "hide_share") share_expired = true;
+                iterator = policies.erase(iterator);
+            }
+            if (share_expired) share_visibility_changed.push_back(fd);
+        }
+    }
+    for (const int fd : share_visibility_changed) {
+        broadcast_current_inf(fd);
+    }
 }
 
 std::unordered_set<std::string> Server::parse_feature_list(

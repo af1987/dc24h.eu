@@ -1,5 +1,9 @@
 # CMakeLists.txt
 #
+# v0.0.06:
+#   - raise CMake project version to 0.0.06
+#   - retain Release-enabled ADC and moderation-key tests
+#
 # v0.0.05:
 #   - raise CMake project version to 0.0.05
 #   - retain ADC and complete user-key parser test targets
@@ -25,11 +29,11 @@
 #   - install binary, example configuration and systemd unit
 #
 # Author: gpt-5.6-sol
-# Date: 2026-08-20
+# Date: 2026-08-21
 
 cmake_minimum_required(VERSION 3.25)
 
-project(dc24h VERSION 0.0.05 LANGUAGES CXX)
+project(dc24h VERSION 0.0.06 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

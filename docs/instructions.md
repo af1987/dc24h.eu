@@ -1,6 +1,10 @@
 <!--
 instructions.md
 
+v0.0.06:
+  - require timed moderation policy persistence and routing enforcement
+  - define duration, protection, delegated privilege and ncdc test rules
+
 v0.0.05:
   - require the complete registered-user administration key set
   - define temporary-class, final-Master and online-query invariants
@@ -22,12 +26,12 @@ v0.0.01:
   - define mandatory project, versioning, ADR and paired C++ file rules
 
 Author: gpt-5.6-sol
-Date: 2026-08-20
+Date: 2026-08-21
 -->
 
 # Engineering instructions
 
-These rules apply to `dc24h.eu-v0.0.05` and later changes.
+These rules apply to `dc24h.eu-v0.0.06` and later changes.
 
 ## Mandatory baseline
 
@@ -51,6 +55,7 @@ These rules apply to `dc24h.eu-v0.0.05` and later changes.
 - Keep the selected session hash stable for a connection.
 - Document every new ADC extension, feature FOURCC, supported state and security implication.
 - Wire-compatibility changes require protocol tests.
+- BASE/TIGR are mandatory in SUP negotiation and TIGR PID/CID verification; do not require clients to repeat them in BINF `SU`.
 
 ## Account and user-class rules
 
@@ -67,15 +72,21 @@ The command semantics are intentionally non-overlapping:
 - `key.user.change.username.password=[username.password]` replaces an existing password by nickname; an empty password resets it to SQL `NULL`.
 - `+passwd <password>` assigns only a missing password to the current enabled local account and must never overwrite an existing hash.
 - `key.user.info.userlist.class=[class]` returns all registered users in the selected class through the private response; `[]` defaults to class `0`, and enabled/password states are marked.
-- Removal, disable/enable, permanent class and account information use the keys documented in `docs/dc24h.eu-v0.0.05.md`.
+- All account and moderation keys use the canonical forms documented in `docs/dc24h.eu-v0.0.06.md`.
 - Removal, disabling or demotion of the final enabled Master (10) must be rejected.
 - A temporary class is memory-only, disappears on restart and cannot exceed Admin (5).
 - IP, range, subnet and hostname keys inspect active IPv4 sessions only and return private results.
 - Reverse DNS is disabled by default and may run only when `dns_lookup=1`.
+- Timed policies use MariaDB UTC expiry, accept `m`/`h`/`d` durations from 1 minute through 365 days, and must be enforced before ADC routing.
+- `gag`, `no_chat`, `no_pm`, `no_search` and `no_download` block the command families defined in ADR-0010.
+- Permanent/timed hidden share must remove BINF `SS`, `SF`, `SL`; hidden operator state clears ADC `CT` bits 4/8/16.
+- Kick protection blocks actor classes less than or equal to its threshold. Non-punitive disconnect is a distinct operation.
+- Delegated registration may create only Regular (0) or Registered (1) accounts.
+- `!opchat` must remain private to Operator+ and active `opchat` grantees.
 
 The live chat form uses the protected `!set ` prefix, for example `!set key.user.new.id.password=[5.StrongPassword]`.
 
-Until ADC VERIFY (`GPA`/`PAS`) authenticates registered users, remote nicknames are not sufficient authorization. The v0.0.05 path remains loopback-only and requires effective Admin (5) or Master (10), except first local Master bootstrap. `+passwd` is also loopback-only.
+Until ADC VERIFY (`GPA`/`PAS`) authenticates registered users, remote nicknames are not sufficient authorization. The v0.0.06 path remains loopback-only with the documented Admin/Master, self-service and delegated capability checks.
 
 ## File history rule
 
@@ -114,6 +125,7 @@ Before publishing a PR:
 - run CTest;
 - review the final PR diff for accidental secret/password disclosure;
 - document completed checks and any unverified environment-dependent checks in the PR.
+- run a real ADC connection and public-message echo test with Debian 13 `ncdc` for protocol/session changes.
 
 ## Pull request rule
 

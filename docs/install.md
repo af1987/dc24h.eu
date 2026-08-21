@@ -1,6 +1,10 @@
 <!--
 install.md
 
+v0.0.06:
+  - update branch and migration instructions for moderation policies
+  - document duration keys, OPChat and ncdc connection validation
+
 v0.0.05:
   - update branch and release references to v0.0.05
   - document updated_at migration and the complete user key set
@@ -22,7 +26,7 @@ v0.0.01:
   - add Debian 13 build, MariaDB and systemd installation procedure
 
 Author: gpt-5.6-sol
-Date: 2026-08-20
+Date: 2026-08-21
 -->
 
 # Installation — Debian 13
@@ -38,23 +42,34 @@ The build requires a C++20 compiler, CMake, pkg-config, MariaDB Connector/C deve
 ```bash
 git clone https://github.com/af1987/dc24h.eu.git
 cd dc24h.eu
-git checkout agent/dc24h-v0.0.05
+git checkout agent/dc24h-v0.0.06
 sudo DC24H_DB_PASSWORD='replace-with-a-strong-password' ./scripts/install.sh
 ```
 
 The installer builds the daemon, applies `sql/schema.sql`, runs CTest, installs the systemd unit and starts `dc24h.service`.
 
-## Database migration for v0.0.05
+## Database migration for v0.0.06
 
-The schema keeps nullable passwords and adds account update metadata:
+The installer applies `sql/schema.sql`. v0.0.06 adds moderation columns and the expiring policy table while retaining nullable passwords:
 
 ```sql
 ALTER TABLE accounts
     MODIFY COLUMN password_hash VARCHAR(255) NULL;
 
 ALTER TABLE accounts
-    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL
-        DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
+    ADD COLUMN IF NOT EXISTS kick_protect_class SMALLINT NOT NULL DEFAULT -2,
+    ADD COLUMN IF NOT EXISTS hide_share BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS hide_operator_key BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS hide_from_class SMALLINT NOT NULL DEFAULT -1,
+    ADD COLUMN IF NOT EXISTS account_note TEXT NULL;
+
+CREATE TABLE IF NOT EXISTS user_timed_policies (
+    account_id BIGINT UNSIGNED NOT NULL,
+    policy_key VARCHAR(32) NOT NULL,
+    expires_at TIMESTAMP(6) NOT NULL,
+    PRIMARY KEY (account_id, policy_key),
+    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+);
 ```
 
 Both the application schema bootstrap and `sql/schema.sql` apply this shape. Existing non-NULL password hashes are preserved.
@@ -91,7 +106,7 @@ Show all registered Operator-class users in the requesting client's private hub 
 
 `!set key.user.info.userlist.class=[3]`
 
-Use `!set key.user.info.userlist.class=[]` for the default Regular class 0. The v0.0.05 result includes disabled accounts and marks enabled/password state.
+Use `!set key.user.info.userlist.class=[]` for the default Regular class 0. The result includes disabled accounts and marks enabled/password state.
 
 Additional account operations:
 
@@ -121,6 +136,26 @@ Online session queries:
 
 Set `dns_lookup=1` in `/etc/dc24h.eu/dc24h.conf` only if reverse DNS is desired, then restart the service. Default is `0`.
 
+## Moderation examples
+
+```text
+!set key.user.disconnect.username=[alice]
+!set key.user.kick.username=[alice]
+!set key.user.protect.username.class=[alice.4]
+!set key.user.hide.share.username=[alice.1]
+!set key.user.hide.operator.username=[alice.1]
+!set key.user.note.username=[alice.Trusted local operator]
+!set key.user.self.hide.class=[3]
+!set key.user.restrict.gag.username.time=[alice]
+!set key.user.restrict.gag.username.time=[alice.12h]
+!set key.user.restrict.gag.remove.username=[alice]
+!set key.user.grant.opchat.username.time=[alice.7d]
+!set key.user.grant.opchat.remove.username=[alice]
+!opchat private operator message
+```
+
+All restriction and privilege keys are listed with defaults in `docs/dc24h.eu-v0.0.06.md`. Explicit durations use `m`, `h` or `d` and range from `1m` to `365d`.
+
 Passwords may contain dots; the parser consumes only the required leading separators.
 
 ## Service operation
@@ -142,13 +177,31 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
+## ncdc ADC connection test
+
+Install the Debian 13 client, start the hub, and connect to its ADC listener:
+
+```bash
+sudo apt-get install -y ncdc
+ncdc -n
+```
+
+In `ncdc`:
+
+```text
+/open dc24h adc://127.0.0.1:1511/
+/say ncdc-v0.0.06-connection-test
+```
+
+A successful test shows the hub description, the connected nickname/user count and the echoed chat line. v0.0.06 was validated with `ncdc 1.23.1`. BASE/TIGR are negotiated in SUP; TIGR PID/CID validation remains active.
+
 ## MariaDB
 
 The application uses database `dc24h`, MariaDB Connector/C and `utf8mb4`. `accounts.user_class` stores the canonical numeric class. `accounts.password_hash` may be `NULL` for a passwordless registration or after an administrator reset.
 
 ## Network
 
-The default ADC listener is TCP port `1511`. v0.0.05 remains IPv4-only. The administrative `!set` and `+passwd` paths remain restricted to `127.0.0.1` until ADC VERIFY is implemented.
+The default ADC listener is TCP port `1511`. v0.0.06 remains IPv4-only. Administrative and self-service paths remain restricted to `127.0.0.1` until ADC VERIFY is implemented.
 
 ## systemd
 

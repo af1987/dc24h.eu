@@ -1,6 +1,9 @@
 <!--
 changelog.md
 
+v0.0.06:
+  - add moderation enforcement, timed privileges and ncdc interoperability
+
 v0.0.05:
   - add the complete user administration and online-query release
 
@@ -17,10 +20,46 @@ v0.0.01:
   - start release history with dc24h.eu-v0.0.01
 
 Author: gpt-5.6-sol
-Date: 2026-08-20
+Date: 2026-08-21
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.06 — 2026-08-21
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- Non-punitive online disconnect and class-protected kick commands.
+- Permanent kick-protection, hidden-share, hidden-operator, visibility-threshold and private-note attributes.
+- MariaDB `user_timed_policies` for gag, download/chat/PM/search restrictions and kick/share/register/OPChat privileges.
+- Duration parser with `m`, `h`, `d`, default durations and 365-day maximum.
+- Routing enforcement for ADC `MSG`, `SCH`, `CTM` and `RCM` families.
+- Private `!opchat <message>` delivery for Operator+ and active grantees.
+- Immediate connected-session policy refresh and user-info policy reporting.
+- ADR-0010 and v0.0.06 release manifest.
+
+### Changed
+
+- Raised canonical version/service/documentation metadata to `0.0.06`.
+- Recorded author/date as `gpt-5.6-sol` / `2026-08-21`.
+- BASE/TIGR remain required in SUP, but are no longer incorrectly required in BINF `SU`.
+- Personalized BINF output removes hidden share fields and standard ADC operator bits.
+- Hidden users' INF and routed traffic are suppressed for recipients below the configured class.
+
+### Validation
+
+- Release build and assertion-enabled CTest suites.
+- MariaDB schema validation on an isolated database.
+- Real `ncdc 1.23.1` ADC/TIGR connection, public-message echo, Master bootstrap and gag-enforcement run.
+
+### Security
+
+- Delegated registration is capped at class 1.
+- Protected kick rejects insufficient actor classes; non-punitive disconnect remains separate.
+- Private notes never enter public routing.
+- Existing IPv4 loopback boundary remains until ADC VERIFY.
 
 ## dc24h.eu-v0.0.05 — 2026-08-20
 

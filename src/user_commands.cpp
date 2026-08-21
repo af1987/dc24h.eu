@@ -3,6 +3,11 @@
 
     - hub-local user management command parser and executor
 
+        v0.0.06:
+            - parse moderation, visibility, note and protected-kick keys
+            - parse duration-based restrictions and delegated privileges
+            - execute persistent moderation policy updates through MariaDB
+
         v0.0.05:
             - add remove, disable, enable, class and account-detail keys
             - add password change/reset by username and private self +passwd parsing
@@ -19,7 +24,7 @@
             - hash passwords before persistence
 
     Author: gpt-5.6-sol
-    Date: 2026-08-20
+    Date: 2026-08-21
 */
 
 // ----------------------------------// DECLARATION //--
@@ -28,6 +33,7 @@
 
 #include "database.hpp"
 
+#include <array>
 #include <charconv>
 #include <limits>
 #include <stdexcept>
@@ -71,6 +77,49 @@ constexpr std::string_view users_by_range_prefix =
 constexpr std::string_view users_by_subnet_prefix =
     "!set key.user.info.userlist.subnet=[";
 constexpr std::string_view self_password_prefix = "+passwd ";
+constexpr std::string_view disconnect_prefix =
+    "!set key.user.disconnect.username=[";
+constexpr std::string_view kick_prefix =
+    "!set key.user.kick.username=[";
+constexpr std::string_view protect_prefix =
+    "!set key.user.protect.username.class=[";
+constexpr std::string_view hide_share_prefix =
+    "!set key.user.hide.share.username=[";
+constexpr std::string_view hide_operator_prefix =
+    "!set key.user.hide.operator.username=[";
+constexpr std::string_view note_prefix =
+    "!set key.user.note.username=[";
+constexpr std::string_view self_visibility_prefix =
+    "!set key.user.self.hide.class=[";
+
+struct TimedKeyDefinition {
+    std::string_view prefix;
+    std::string_view policy_key;
+    std::uint64_t default_seconds;
+    bool remove;
+};
+
+constexpr std::uint64_t day_seconds = 24U * 60U * 60U;
+constexpr std::array<TimedKeyDefinition, 18> timed_keys{{
+    {"!set key.user.restrict.gag.username.time=[", "gag", 7U * day_seconds, false},
+    {"!set key.user.restrict.gag.remove.username=[", "gag", 0U, true},
+    {"!set key.user.restrict.download.username.time=[", "no_download", 2U * day_seconds, false},
+    {"!set key.user.restrict.download.remove.username=[", "no_download", 0U, true},
+    {"!set key.user.restrict.chat.username.time=[", "no_chat", 2U * day_seconds, false},
+    {"!set key.user.restrict.chat.remove.username=[", "no_chat", 0U, true},
+    {"!set key.user.restrict.pm.username.time=[", "no_pm", 7U * day_seconds, false},
+    {"!set key.user.restrict.pm.remove.username=[", "no_pm", 0U, true},
+    {"!set key.user.restrict.search.username.time=[", "no_search", 7U * day_seconds, false},
+    {"!set key.user.restrict.search.remove.username=[", "no_search", 0U, true},
+    {"!set key.user.grant.kick.username.time=[", "can_kick", 7U * day_seconds, false},
+    {"!set key.user.grant.kick.remove.username=[", "can_kick", 0U, true},
+    {"!set key.user.grant.hideshare.username.time=[", "hide_share", 7U * day_seconds, false},
+    {"!set key.user.grant.hideshare.remove.username=[", "hide_share", 0U, true},
+    {"!set key.user.grant.register.username.time=[", "can_register", 7U * day_seconds, false},
+    {"!set key.user.grant.register.remove.username=[", "can_register", 0U, true},
+    {"!set key.user.grant.opchat.username.time=[", "opchat", 7U * day_seconds, false},
+    {"!set key.user.grant.opchat.remove.username=[", "opchat", 0U, true}
+}};
 
 bool unwrap(std::string_view command,
             std::string_view prefix,
@@ -126,6 +175,37 @@ bool valid_password(std::string_view password) noexcept {
         if (ch < 0x20U || ch == 0x7FU) return false;
     }
     return true;
+}
+
+bool valid_note(std::string_view note) noexcept {
+    if (note.size() > 2000U) return false;
+    for (const unsigned char ch : note) {
+        if ((ch < 0x20U && ch != '\t') || ch == 0x7FU) return false;
+    }
+    return true;
+}
+
+std::optional<std::uint64_t> parse_duration(
+    std::string_view value) noexcept {
+    if (value.size() < 2U) return std::nullopt;
+    const char suffix = value.back();
+    std::uint64_t multiplier = 0;
+    if (suffix == 'm') multiplier = 60U;
+    else if (suffix == 'h') multiplier = 60U * 60U;
+    else if (suffix == 'd') multiplier = day_seconds;
+    else return std::nullopt;
+
+    std::uint64_t amount = 0;
+    const auto number = value.substr(0, value.size() - 1U);
+    const auto result = std::from_chars(
+        number.data(), number.data() + number.size(), amount);
+    constexpr std::uint64_t maximum = 365U * day_seconds;
+    if (result.ec != std::errc{} ||
+        result.ptr != number.data() + number.size() || amount == 0U ||
+        amount > maximum / multiplier) return std::nullopt;
+    const auto seconds = amount * multiplier;
+    if (seconds < 60U || seconds > maximum) return std::nullopt;
+    return seconds;
 }
 
 std::optional<UserClass> checked_class(std::string_view value,
@@ -247,6 +327,70 @@ std::optional<UserSetCommand> parse_username_class(
     return parsed;
 }
 
+std::optional<UserSetCommand> parse_username_flag(
+    std::string_view payload,
+    UserSetAction action,
+    std::string& error) {
+    const auto dot = payload.find('.');
+    if (dot == std::string_view::npos ||
+        payload.find('.', dot + 1U) != std::string_view::npos) {
+        error = "expected [username.0|1]";
+        return std::nullopt;
+    }
+    const auto username = payload.substr(0, dot);
+    const auto flag = payload.substr(dot + 1U);
+    if (!valid_username(username)) {
+        error = "invalid username";
+        return std::nullopt;
+    }
+    if (flag != "0" && flag != "1") {
+        error = "flag must be 0 or 1";
+        return std::nullopt;
+    }
+    UserSetCommand parsed;
+    parsed.action = action;
+    parsed.username = std::string(username);
+    parsed.enabled = flag == "1";
+    return parsed;
+}
+
+std::optional<UserSetCommand> parse_timed_policy(
+    std::string_view payload,
+    const TimedKeyDefinition& definition,
+    std::string& error) {
+    const auto dot = payload.find('.');
+    const auto username = dot == std::string_view::npos
+        ? payload
+        : payload.substr(0, dot);
+    if (!valid_username(username)) {
+        error = "invalid username";
+        return std::nullopt;
+    }
+    if (definition.remove && dot != std::string_view::npos) {
+        error = "remove key expects [username]";
+        return std::nullopt;
+    }
+
+    UserSetCommand parsed;
+    parsed.action = definition.remove
+        ? UserSetAction::remove_timed_policy
+        : UserSetAction::set_timed_policy;
+    parsed.username = std::string(username);
+    parsed.policy_key = std::string(definition.policy_key);
+    if (!definition.remove) {
+        parsed.duration_seconds = definition.default_seconds;
+        if (dot != std::string_view::npos) {
+            const auto duration = parse_duration(payload.substr(dot + 1U));
+            if (!duration.has_value()) {
+                error = "duration must be 1m..365d using m, h or d";
+                return std::nullopt;
+            }
+            parsed.duration_seconds = *duration;
+        }
+    }
+    return parsed;
+}
+
 std::string change_error(AccountChangeResult result) {
     if (result == AccountChangeResult::user_not_found) {
         return "registered username not found";
@@ -331,6 +475,63 @@ std::optional<UserSetCommand> UserCommandProcessor::parse(
     }
     if (unwrap(command, enable_user_prefix, payload)) {
         return parse_username(payload, UserSetAction::enable_user, error);
+    }
+    if (unwrap(command, disconnect_prefix, payload)) {
+        return parse_username(payload, UserSetAction::disconnect_user, error);
+    }
+    if (unwrap(command, kick_prefix, payload)) {
+        return parse_username(payload, UserSetAction::kick_user, error);
+    }
+    if (unwrap(command, protect_prefix, payload)) {
+        return parse_username_class(payload,
+                                    UserSetAction::set_kick_protection,
+                                    false,
+                                    error);
+    }
+    if (unwrap(command, hide_share_prefix, payload)) {
+        return parse_username_flag(payload, UserSetAction::set_hide_share, error);
+    }
+    if (unwrap(command, hide_operator_prefix, payload)) {
+        return parse_username_flag(
+            payload, UserSetAction::set_hide_operator_key, error);
+    }
+    if (unwrap(command, note_prefix, payload, true)) {
+        const auto dot = payload.find('.');
+        if (dot == std::string_view::npos) {
+            error = "expected [username.note]";
+            return std::nullopt;
+        }
+        const auto username = payload.substr(0, dot);
+        const auto note = payload.substr(dot + 1U);
+        if (!valid_username(username)) {
+            error = "invalid username";
+            return std::nullopt;
+        }
+        if (!valid_note(note)) {
+            error = "note must be at most 2000 printable UTF-8 bytes";
+            return std::nullopt;
+        }
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::set_user_note;
+        parsed.username = std::string(username);
+        parsed.note = std::string(note);
+        return parsed;
+    }
+    if (unwrap(command, self_visibility_prefix, payload)) {
+        const auto user_class = checked_class(payload, error);
+        if (!user_class.has_value()) return std::nullopt;
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::set_self_visibility;
+        parsed.user_class = *user_class;
+        return parsed;
+    }
+    for (const auto& definition : timed_keys) {
+        if (!command.starts_with(definition.prefix)) continue;
+        if (!unwrap(command, definition.prefix, payload)) {
+            error = "malformed timed-policy payload";
+            return std::nullopt;
+        }
+        return parse_timed_policy(payload, definition, error);
     }
     if (unwrap(command, temporary_class_prefix, payload)) {
         return parse_username_class(payload,
@@ -493,10 +694,80 @@ UserSetResult UserCommandProcessor::execute(const UserSetCommand& command) {
                         std::to_string(static_cast<std::int16_t>(command.user_class))}
                     : UserSetResult{false, error};
             }
+            case UserSetAction::set_kick_protection:
+                if (!database_.set_kick_protect_class(
+                        command.username,
+                        static_cast<std::int16_t>(command.user_class))) {
+                    return {false, "registered username not found"};
+                }
+                return {true, "kick/ban protection changed: username=" +
+                    command.username + " protected_through_class=" +
+                    std::to_string(static_cast<std::int16_t>(command.user_class))};
+            case UserSetAction::set_hide_share:
+                if (!database_.set_hide_share(
+                        command.username, command.enabled)) {
+                    return {false, "registered username not found"};
+                }
+                return {true, "share visibility changed: username=" +
+                    command.username + " hidden=" +
+                    (command.enabled ? "yes" : "no")};
+            case UserSetAction::set_hide_operator_key:
+                if (!database_.set_hide_operator_key(
+                        command.username, command.enabled)) {
+                    return {false, "registered username not found"};
+                }
+                return {true, "operator key visibility changed: username=" +
+                    command.username + " hidden=" +
+                    (command.enabled ? "yes" : "no")};
+            case UserSetAction::set_user_note:
+                if (!database_.set_user_note(command.username, command.note)) {
+                    return {false, "registered username not found"};
+                }
+                return {true, command.note.empty()
+                    ? "account note removed: username=" + command.username
+                    : "account note stored: username=" + command.username};
+            case UserSetAction::set_self_visibility:
+                if (!database_.set_hide_from_class(
+                        command.username,
+                        static_cast<std::int16_t>(command.user_class))) {
+                    return {false, "enabled registered username not found"};
+                }
+                return {true, "self visibility changed: username=" +
+                    command.username + " visible_from_class=" +
+                    std::to_string(static_cast<std::int16_t>(command.user_class))};
+            case UserSetAction::set_timed_policy:
+                if (!database_.set_timed_policy(
+                        command.username,
+                        command.policy_key,
+                        command.duration_seconds)) {
+                    return {false, "enabled registered username not found"};
+                }
+                return {true, "timed policy set: username=" + command.username +
+                    " policy=" + command.policy_key + " duration_seconds=" +
+                    std::to_string(command.duration_seconds)};
+            case UserSetAction::remove_timed_policy:
+                if (!database_.remove_timed_policy(
+                        command.username, command.policy_key)) {
+                    return {false, "registered username not found"};
+                }
+                return {true, "timed policy removed: username=" +
+                    command.username + " policy=" + command.policy_key};
             case UserSetAction::show_user_info: {
                 const auto details = database_.user_details(command.username);
                 if (!details.has_value()) {
                     return {false, "registered username not found"};
+                }
+                const auto runtime = database_.runtime_policy(command.username);
+                std::string policies = "none";
+                if (!runtime.timed_policies.empty()) {
+                    policies.clear();
+                    bool first = true;
+                    for (const auto& policy : runtime.timed_policies) {
+                        if (!first) policies += ',';
+                        first = false;
+                        policies += policy.policy_key + "@" +
+                            std::to_string(policy.expires_at);
+                    }
                 }
                 return {true, "user info: id=" + std::to_string(details->id) +
                     " username=" + details->username + " class=" +
@@ -505,7 +776,16 @@ UserSetResult UserCommandProcessor::execute(const UserSetCommand& command) {
                     " enabled=" + (details->enabled ? "yes" : "no") +
                     " password=" + (details->has_password ? "set" : "unset") +
                     " created_at=" + details->created_at +
-                    " updated_at=" + details->updated_at};
+                    " updated_at=" + details->updated_at +
+                    " kick_protect_class=" +
+                    std::to_string(details->kick_protect_class) +
+                    " hide_share=" + (details->hide_share ? "yes" : "no") +
+                    " hide_operator_key=" +
+                    (details->hide_operator_key ? "yes" : "no") +
+                    " visible_from_class=" +
+                    std::to_string(details->hide_from_class) +
+                    " timed_policies=" + policies +
+                    " note=" + (details->note.empty() ? "<empty>" : details->note)};
             }
             case UserSetAction::self_add_password: {
                 const auto outcome = database_.add_user_password_if_missing(
@@ -529,6 +809,8 @@ UserSetResult UserCommandProcessor::execute(const UserSetCommand& command) {
 bool UserCommandProcessor::requires_live_sessions(
     UserSetAction action) noexcept {
     return action == UserSetAction::change_class_temporarily ||
+           action == UserSetAction::disconnect_user ||
+           action == UserSetAction::kick_user ||
            action == UserSetAction::show_ip_and_hostname ||
            action == UserSetAction::show_hostname ||
            action == UserSetAction::find_users_by_ip ||

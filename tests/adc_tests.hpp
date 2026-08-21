@@ -1,6 +1,9 @@
 /*
     adc_tests.hpp
 
+    v0.0.06:
+        - retain ADC declarations for canonical v0.0.06 validation
+
     v0.0.05:
         - retain ADC test declarations for canonical v0.0.05 validation
 
@@ -8,7 +11,7 @@
         - declare focused unit tests for ADC parsing, state and TIGR identity
 
     Author: gpt-5.6-sol
-    Date: 2026-08-20
+    Date: 2026-08-21
 */
 
 #pragma once
