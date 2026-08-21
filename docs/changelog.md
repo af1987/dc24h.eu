@@ -1,6 +1,10 @@
 <!--
 changelog.md
 
+v0.0.09:
+  - add the protected per-hub home and local database settings administration
+  - record secure repeat installation and reviewed release validation
+
 v0.0.08:
   - add persistent, auditable kick and ban admission controls
 
@@ -30,6 +34,80 @@ Date: 2026-08-21
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.09 — 2026-08-21
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- Protected hub home at `/var/lib/dc24h.eu/dc24h.eu`, with root-owned runtime,
+  MariaDB and administration files.
+- Strict `database.cnf` template containing the standard MariaDB `[client]`
+  options read by Connector/C.
+- Paired `settings_cli.cpp` / `settings_cli.hpp` executable target
+  `/usr/local/bin/dc24h-settings`.
+- Root-only `01-edit-hub-settings.sh HUB_HOME` wrapper with `list`, `get`, `set`
+  and `check` operations.
+- Split-configuration parser tests, CLI help, executable wrapper, shell syntax
+  and ShellCheck CTest targets.
+- ADR-0013 and the v0.0.09 release manifest.
+
+### Changed
+
+- Raised canonical runtime, CMake, test, documentation and systemd metadata to
+  `0.0.09`.
+- systemd now uses the protected hub home as `HOME`, working directory,
+  configuration location and explicit read-only path.
+- The active runtime file now contains `database_config=database.cnf`; the
+  application validates the option file before Connector/C reads it.
+- The installer migrates an existing home or legacy `/etc/dc24h.eu/dc24h.conf`,
+  preserves non-database runtime options, updates the service-account home and
+  preserves the existing home or legacy database password without a silent
+  rotation.
+- A clean install now obtains its password from a hidden prompt or an absolute
+  root-owned mode-`0600` file named by `DC24H_DB_PASSWORD_FILE`; the environment
+  carries only the file path. After an active service is confirmed, the legacy
+  `/etc` configuration path becomes a symlink to the non-secret home config.
+- Installation now orders Release build/CTest, database/schema setup, atomic
+  config publication, validation with the just-built settings tool, artifact
+  installation and restart.
+- All setting snapshots now require exactly 30 canonical rows. Updates validate
+  the complete candidate snapshot within a `FOR UPDATE` transaction.
+
+### Security
+
+- MariaDB credentials are separated from the ordinary runtime configuration
+  and protected as `root:dc24h` mode `0640`.
+- The option-file parser rejects mixed credentials, duplicate/unknown/missing
+  keys, unsupported protocol/charset values, symlinks and unsafe permissions.
+- The local administration path requires root, a canonical direct-child hub
+  home with exact owner/modes, and exposes no arbitrary SQL or delete operation.
+- Invalid settings or broken nickname/kick-ban invariants roll back without a
+  partial write.
+- Privileged scripts use `/bin/bash`, a fixed system `PATH`, root-only staging
+  and explicit non-symlink checks. The password is not accepted as an
+  environment-variable value or command argument.
+
+### Validation
+
+- Debian 13.6 clean Release build with warnings treated as errors completed;
+  CTest, including ShellCheck, passed 8/8.
+- The installer completed repeated executions. The final current-installer run
+  took no new password, reused the existing `database.cnf` credential and
+  performed no silent rotation or secret-valued environment input.
+- `sql/schema.sql` was applied repeatedly and the database retained exactly 30
+  canonical settings.
+- Live `list`, `get`, `set` and `check`, invalid-key/range cases, both
+  relational invariants and 12 concurrent update attempts completed with a
+  successful final `check`.
+- `dc24h.service` was active, its unit passed verification and
+  `systemd-analyze security` reported exposure score `3.0`.
+- A real Debian `ncdc 1.23.1` ADC/TIGR session echoed
+  `ncdc-v0.0.09-connection-test`, then reconnected after service restart and
+  echoed `ncdc-v0.0.09-after-restart`.
+- Local forbidden-name, C++ pair and secret scans passed.
+- Remote GitHub CI is the required final merge gate for PR #9.
 
 ## dc24h.eu-v0.0.08 — 2026-08-21
 

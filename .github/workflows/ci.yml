@@ -1,5 +1,9 @@
 # ci.yml
 #
+# v0.0.09:
+#   - install ShellCheck for the administration script CTest gate
+#   - run split-config, CLI and executable-script tests through CTest
+#
 # v0.0.02:
 #   - install libgcrypt development package for TIGR
 #   - execute CTest after the Debian 13 build
@@ -8,7 +12,7 @@
 #   - build dc24h.eu in a Debian 13 container
 #
 # Author: gpt-5.6-sol
-# Date: 2026-08-19
+# Date: 2026-08-21
 
 name: build
 
@@ -28,7 +32,7 @@ jobs:
       - name: Install CI prerequisites
         run: |
           apt-get update
-          apt-get install -y git ca-certificates build-essential cmake pkg-config libmariadb-dev libgcrypt20-dev
+          apt-get install -y git ca-certificates build-essential cmake pkg-config libmariadb-dev libgcrypt20-dev shellcheck
 
       - name: Checkout
         uses: actions/checkout@v4

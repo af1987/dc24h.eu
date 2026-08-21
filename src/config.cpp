@@ -1,6 +1,11 @@
 /*
     config.cpp
 
+    v0.0.09:
+        - load MariaDB credentials from a separate database.cnf file
+        - resolve relative database config paths beside the hub config
+        - reject mixed inline/external credentials and malformed option files
+
     v0.0.05:
         - parse dns_lookup as a strict 0/1 configuration value
 
@@ -10,16 +15,19 @@
         - keep en_US.UTF-8 as baseline locale
 
     Author: gpt-5.6-sol
-    Date: 2026-08-20
+    Date: 2026-08-21
 */
 
 #include "config.hpp"
 
 #include <charconv>
 #include <cctype>
+#include <filesystem>
 #include <fstream>
+#include <set>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 namespace dc24h {
 namespace {
@@ -47,15 +55,150 @@ T parse_integer(std::string_view text, const std::string& key) {
     return value;
 }
 
+std::pair<std::string, std::string> parse_assignment(
+    std::string line,
+    const std::filesystem::path& path,
+    std::size_t line_number) {
+    const auto separator = line.find('=');
+    if (separator == std::string::npos) {
+        throw std::runtime_error(
+            "Invalid configuration line " + std::to_string(line_number) +
+            " in " + path.string());
+    }
+    auto key = trim(line.substr(0, separator));
+    auto value = trim(line.substr(separator + 1));
+    if (key.empty()) {
+        throw std::runtime_error(
+            "Empty configuration key on line " +
+            std::to_string(line_number) + " in " + path.string());
+    }
+    return {std::move(key), std::move(value)};
+}
+
+std::filesystem::path resolved_database_path(
+    const std::filesystem::path& runtime_path,
+    const std::string& configured_path) {
+    std::filesystem::path database_path(configured_path);
+    const bool relative = database_path.is_relative();
+    if (relative && database_path.has_parent_path()) {
+        throw std::runtime_error(
+            "relative database_config must name a file beside dc24h.conf");
+    }
+    auto absolute_runtime = std::filesystem::absolute(runtime_path);
+    std::error_code error;
+    const auto canonical_runtime =
+        std::filesystem::weakly_canonical(absolute_runtime, error);
+    if (!error) absolute_runtime = canonical_runtime;
+    const auto runtime_directory = absolute_runtime.parent_path();
+    if (database_path.is_relative()) {
+        database_path = runtime_directory / database_path;
+    }
+    database_path = database_path.lexically_normal();
+    const auto link_status = std::filesystem::symlink_status(database_path);
+    if (std::filesystem::is_symlink(link_status)) {
+        throw std::runtime_error(
+            "database_config must not be a symbolic link: " +
+            database_path.string());
+    }
+    const auto file_status = std::filesystem::status(database_path);
+    if (!std::filesystem::is_regular_file(file_status)) {
+        throw std::runtime_error(
+            "database_config is not a regular file: " +
+            database_path.string());
+    }
+    const auto permissions = file_status.permissions();
+    using perms = std::filesystem::perms;
+    const auto allowed = perms::owner_read | perms::owner_write |
+                         perms::group_read;
+    if ((permissions & perms::owner_read) == perms::none ||
+        (permissions & ~allowed) != perms::none) {
+        throw std::runtime_error(
+            "database_config permissions must be 0640 or stricter: " +
+            database_path.string());
+    }
+    const auto canonical_database = std::filesystem::canonical(database_path);
+    if (canonical_database.parent_path() != runtime_directory) {
+        throw std::runtime_error(
+            "database_config must be stored beside dc24h.conf");
+    }
+    return canonical_database;
+}
+
+void validate_database_config(const std::filesystem::path& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error(
+            "Unable to open database configuration file: " + path.string());
+    }
+
+    const std::set<std::string> required{
+        "protocol", "host", "port", "database", "user", "password",
+        "default-character-set"};
+    std::set<std::string> seen;
+    std::string line;
+    std::size_t line_number = 0;
+    bool client_section = false;
+    while (std::getline(input, line)) {
+        ++line_number;
+        line = trim(line);
+        if (line.empty() || line.starts_with('#') || line.starts_with(';')) {
+            continue;
+        }
+        if (line.front() == '[' && line.back() == ']') {
+            if (line != "[client]" || client_section) {
+                throw std::runtime_error(
+                    "database_config must contain one [client] section");
+            }
+            client_section = true;
+            continue;
+        }
+        if (!client_section) {
+            throw std::runtime_error(
+                "database options must follow the [client] section");
+        }
+        auto [key, value] = parse_assignment(line, path, line_number);
+        if (!required.contains(key)) {
+            throw std::runtime_error(
+                "Unknown database configuration key: " + key);
+        }
+        if (!seen.insert(key).second) {
+            throw std::runtime_error(
+                "Duplicate database configuration key: " + key);
+        }
+        if (value.empty()) {
+            throw std::runtime_error(
+                "Empty database configuration value for: " + key);
+        }
+        if (key == "port" && parse_integer<std::uint16_t>(value, key) == 0U) {
+            throw std::runtime_error("database port must be in range 1..65535");
+        }
+        if (key == "protocol" && value != "tcp") {
+            throw std::runtime_error("database protocol must be tcp");
+        }
+        if (key == "default-character-set" && value != "utf8mb4") {
+            throw std::runtime_error(
+                "database default-character-set must be utf8mb4");
+        }
+    }
+    if (!client_section || seen != required) {
+        throw std::runtime_error(
+            "database_config must define protocol, host, port, database, user, "
+            "password and default-character-set exactly once");
+    }
+}
+
 }  // namespace
 
 Config load_config(const std::string& path) {
-    std::ifstream input(path);
+    const std::filesystem::path runtime_path(path);
+    std::ifstream input(runtime_path);
     if (!input) {
         throw std::runtime_error("Unable to open configuration file: " + path);
     }
 
     Config config;
+    std::set<std::string> seen;
+    bool inline_database_setting = false;
     std::string line;
     std::size_t line_number = 0;
 
@@ -66,13 +209,10 @@ Config load_config(const std::string& path) {
             continue;
         }
 
-        const auto separator = line.find('=');
-        if (separator == std::string::npos) {
-            throw std::runtime_error("Invalid configuration line " + std::to_string(line_number));
+        auto [key, value] = parse_assignment(line, runtime_path, line_number);
+        if (!seen.insert(key).second) {
+            throw std::runtime_error("Duplicate configuration key: " + key);
         }
-
-        const auto key = trim(line.substr(0, separator));
-        const auto value = trim(line.substr(separator + 1));
 
         if (key == "hub_name") config.hub_name = value;
         else if (key == "hub_description") config.hub_description = value;
@@ -85,12 +225,44 @@ Config load_config(const std::string& path) {
             else if (value == "1") config.dns_lookup = true;
             else throw std::runtime_error("dns_lookup must be 0 or 1");
         }
-        else if (key == "database_host") config.database_host = value;
-        else if (key == "database_port") config.database_port = parse_integer<std::uint16_t>(value, key);
-        else if (key == "database_name") config.database_name = value;
-        else if (key == "database_user") config.database_user = value;
-        else if (key == "database_password") config.database_password = value;
+        else if (key == "database_config") {
+            if (value.empty()) {
+                throw std::runtime_error("database_config must not be empty");
+            }
+            config.database_config_path = value;
+        }
+        else if (key == "database_host") {
+            inline_database_setting = true;
+            config.database_host = value;
+        }
+        else if (key == "database_port") {
+            inline_database_setting = true;
+            config.database_port = parse_integer<std::uint16_t>(value, key);
+        }
+        else if (key == "database_name") {
+            inline_database_setting = true;
+            config.database_name = value;
+        }
+        else if (key == "database_user") {
+            inline_database_setting = true;
+            config.database_user = value;
+        }
+        else if (key == "database_password") {
+            inline_database_setting = true;
+            config.database_password = value;
+        }
         else throw std::runtime_error("Unknown configuration key: " + key);
+    }
+
+    if (!config.database_config_path.empty()) {
+        if (inline_database_setting) {
+            throw std::runtime_error(
+                "Do not mix database_config with inline database settings");
+        }
+        const auto database_path = resolved_database_path(
+            runtime_path, config.database_config_path);
+        config.database_config_path = database_path.string();
+        validate_database_config(database_path);
     }
 
     if (config.listen_port == 0 || config.database_port == 0) {
@@ -99,8 +271,14 @@ Config load_config(const std::string& path) {
     if (config.max_clients == 0) {
         throw std::runtime_error("max_clients must be greater than zero");
     }
-    if (config.database_password.empty()) {
+    if (config.database_config_path.empty() && config.database_password.empty()) {
         throw std::runtime_error("database_password must not be empty");
+    }
+    if (config.database_config_path.empty() &&
+        (config.database_host.empty() || config.database_name.empty() ||
+         config.database_user.empty())) {
+        throw std::runtime_error(
+            "database host, name and user must not be empty");
     }
 
     return config;

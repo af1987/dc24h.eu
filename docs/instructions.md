@@ -1,6 +1,12 @@
 <!--
 instructions.md
 
+v0.0.09:
+  - require the protected per-hub home and split database configuration
+  - define the root-only validated settings administration boundary
+  - require complete 30-row validation and transaction-safe updates
+  - require secret-safe clean install and credential-preserving reinstall
+
 v0.0.08:
   - define persistent kick/ban key, target, audit and admission rules
   - require immutable ADC identity and live ncdc moderation validation
@@ -39,7 +45,7 @@ Date: 2026-08-21
 
 # Engineering instructions
 
-These rules apply to `dc24h.eu-v0.0.08` and later changes.
+These rules apply to `dc24h.eu-v0.0.09` and later changes.
 
 ## Mandatory baseline
 
@@ -53,6 +59,7 @@ These rules apply to `dc24h.eu-v0.0.08` and later changes.
 - Target OS: Debian 13.
 - Service manager: systemd.
 - Build system: CMake.
+- Installed hub home: `/var/lib/dc24h.eu/dc24h.eu`.
 
 ## Protocol rules
 
@@ -81,7 +88,9 @@ The command semantics are intentionally non-overlapping:
 - `key.user.change.username.password=[username.password]` replaces an existing password by nickname; an empty password resets it to SQL `NULL`.
 - `+passwd <password>` assigns only a missing password to the current enabled local account and must never overwrite an existing hash.
 - `key.user.info.userlist.class=[class]` returns all registered users in the selected class through the private response; `[]` defaults to class `0`, and enabled/password states are marked.
-- All account, moderation and hub-policy keys use the canonical forms documented in `docs/dc24h.eu-v0.0.08.md`.
+- Account and moderation command forms remain canonical as documented in
+  `docs/dc24h.eu-v0.0.08.md`; the v0.0.09 deployment and local settings
+  interface are documented in `docs/dc24h.eu-v0.0.09.md`.
 - Global policy values are validated before storage in MariaDB; unknown keys and malformed values are rejected.
 - `+regme` must enforce configured class, nickname prefix, share and password rules.
 - Passwordless accounts receive a finite first-password deadline.
@@ -119,6 +128,68 @@ The command semantics are intentionally non-overlapping:
 The live chat form uses the protected `!set ` prefix, for example `!set key.user.new.id.password=[5.StrongPassword]`.
 
 Until ADC VERIFY (`GPA`/`PAS`) authenticates registered users, remote nicknames are not sufficient management authorization. Protected `!set` remains loopback-only; only the documented `+passwd` and `+regme` self-service paths may run remotely. Optional account IP binding narrows the admission boundary.
+
+## Per-hub home and local settings rules
+
+- The canonical installed instance is `/var/lib/dc24h.eu/dc24h.eu`; the text
+  `nazwa-huba` is a placeholder for a validated instance-name segment and must
+  never become a literal installation directory.
+- `/var/lib/dc24h.eu` is `root:root` mode `0755`. The instance home and its
+  `scripts/` directory are `root:dc24h` mode `0750`; `dc24h.conf` and
+  `database.cnf` are `root:dc24h` mode `0640`; the installed wrapper is
+  `root:dc24h` mode `0750`.
+- The `dc24h` service account uses the instance path as its account home, keeps
+  `/usr/sbin/nologin`, and must not have write access to the root-owned runtime
+  files.
+- The active `dc24h.conf` contains non-secret runtime options and exactly one
+  `database_config=database.cnf` reference. New installations must not put
+  inline database credentials in this file.
+- A relative `database_config` is resolved against the directory containing
+  `dc24h.conf`, must be a basename beside it, and must not be a symbolic link.
+- `database.cnf` is a standard MariaDB option file read by Connector/C. It must
+  have exactly one `[client]` section and define `protocol=tcp`, `host`, `port`,
+  `database`, `user`, `password` and `default-character-set=utf8mb4` exactly
+  once. Unknown sections/keys, duplicate or empty values, unsafe permissions
+  and mixing with inline `database_*` keys must fail closed.
+- The legacy inline database form may remain readable for migration, but the
+  installed service and the local settings tool use the split configuration.
+- Shell code must not `source` either configuration file. Database passwords
+  must not be passed in command arguments, printed by administration commands
+  or committed to the repository.
+- A clean install may obtain the database password only from an interactive
+  hidden prompt or an absolute root-owned mode-`0600` non-symlink regular file
+  selected by `DC24H_DB_PASSWORD_FILE`. This variable contains a path, never the
+  password value. Reject malformed files and unset the inherited environment
+  variable immediately after copying its path.
+- A reinstall reuses the existing `database.cnf` password; migration from the
+  combined legacy configuration reuses its inline password. Supplying a new
+  password file in either case must fail. Installation must not silently rotate
+  the database account or issue `ALTER USER`; rotation is a separate explicit
+  administrative workflow.
+- Privileged scripts use `/bin/bash`, set a fixed system `PATH`, reject
+  symlinked deployment/configuration inputs and stage sensitive output with
+  root-only permissions.
+- The installer order is Release build and CTest, MariaDB/schema application,
+  atomic publication of `dc24h.conf` and `database.cnf`, validation with the
+  just-built `dc24h-settings`, installation of those tested artifacts, and
+  service restart. Only after the unit is active may the legacy
+  `/etc/dc24h.eu/dc24h.conf` be atomically replaced by a symlink to the
+  non-secret home runtime file.
+- `01-edit-hub-settings.sh` requires root, canonicalizes `HUB_HOME`, limits it
+  to one safe direct child of `/var/lib/dc24h.eu`, and delegates unchanged
+  arguments to `/usr/local/bin/dc24h-settings`.
+- The only local operations are `list`, `get KEY`, `set KEY VALUE` and `check`.
+  Do not add arbitrary SQL or delete access without a new security ADR.
+- `list`, `get` and `check` validate a complete snapshot of exactly 30 canonical
+  settings. `key.account.password.setup.timeout` remains only a compatibility
+  alias for `key.user.password.initial.timeout`.
+- `set` must reuse `normalize_hub_setting()`, lock the complete selected
+  snapshot using a MariaDB transaction and `FOR UPDATE`, enforce
+  `key.kicks <= key.bans` and
+  `key.nick.length.minimum <= key.nick.length.maximum`, and commit or roll back
+  without leaving a partial update.
+- Database-backed setting updates are consumed on the next relevant settings
+  lookup. Changes to `dc24h.conf` or `database.cnf` require a service restart.
 
 ## File history rule
 
@@ -159,9 +230,21 @@ Before publishing a PR:
 - configure CMake against the Debian 13 dependency set;
 - build with project warning flags;
 - run CTest;
+- run shell syntax and ShellCheck checks for `install.sh` and
+  `01-edit-hub-settings.sh`;
+- test strict split-config parsing, including duplicate, incomplete, mixed,
+  over-permissive, parent-path and symlinked inputs;
+- against isolated MariaDB, require exactly 30 settings and test local
+  `list`, `get`, `set` and `check`, invalid values and both cross-key invariants;
+- run a clean install and at least one reinstall on Debian 13; verify the
+  account home, ownership, modes, atomic configuration publication, preserved
+  runtime options and password reuse without rotation;
 - review the final PR diff for accidental secret/password disclosure;
-- document completed checks and any unverified environment-dependent checks in the PR.
-- run a real ADC connection and public-message echo test with Debian 13 `ncdc` for protocol/session changes.
+- document completed checks and any unverified environment-dependent checks in
+  the PR;
+- run a real ADC connection and public-message echo test with Debian 13 `ncdc`
+  using a separate `-c` session directory for every client when connection,
+  protocol, configuration or deployment behavior changes.
 - for kick/ban changes, run two isolated `ncdc` clients and verify immediate
   denial, expiry or soft-unban recovery, and persistence across a hub restart.
 - apply `sql/schema.sql` twice against an isolated MariaDB instance and verify

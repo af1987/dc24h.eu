@@ -1,5 +1,9 @@
 # dc24h.conf.example
 #
+# v0.0.09:
+#   - move MariaDB credentials into a protected database.cnf beside this file
+#   - add a relative database_config reference for per-hub home deployment
+#
 # v0.0.05:
 #   - add disabled-by-default reverse DNS for user host queries
 #
@@ -9,7 +13,7 @@
 #   - add MariaDB connection settings
 #
 # Author: gpt-5.6-sol
-# Date: 2026-08-20
+# Date: 2026-08-21
 
 hub_name=dc24h.eu
 hub_description=dc24h.eu Direct Connect ADC Hub
@@ -19,8 +23,4 @@ max_clients=1024
 locale=en_US.UTF-8
 dns_lookup=0
 
-database_host=127.0.0.1
-database_port=3306
-database_name=dc24h
-database_user=dc24h
-database_password=CHANGE_ME
+database_config=database.cnf
