@@ -1,5 +1,9 @@
 # CMakeLists.txt
 #
+# v0.0.07:
+#   - raise CMake project version to 0.0.07
+#   - add paired hub-settings module to daemon and user tests
+#
 # v0.0.06:
 #   - raise CMake project version to 0.0.06
 #   - retain Release-enabled ADC and moderation-key tests
@@ -33,7 +37,7 @@
 
 cmake_minimum_required(VERSION 3.25)
 
-project(dc24h VERSION 0.0.06 LANGUAGES CXX)
+project(dc24h VERSION 0.0.07 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -65,6 +69,8 @@ add_executable(dc24h.eu
     src/hash.hpp
     src/user.cpp
     src/user.hpp
+    src/hub_settings.cpp
+    src/hub_settings.hpp
     src/user_commands.cpp
     src/user_commands.hpp
     src/adc.cpp
@@ -109,6 +115,14 @@ if(BUILD_TESTING)
         src/database.hpp
         src/user.cpp
         src/user.hpp
+        src/adc.cpp
+        src/adc.hpp
+        src/hash.cpp
+        src/hash.hpp
+        src/version.cpp
+        src/version.hpp
+        src/hub_settings.cpp
+        src/hub_settings.hpp
         src/user_commands.cpp
         src/user_commands.hpp
     )

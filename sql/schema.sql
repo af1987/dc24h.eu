@@ -1,5 +1,9 @@
 -- schema.sql
 --
+-- v0.0.07:
+--   - add account binding, profile, kick visibility and login telemetry columns
+--   - seed class, nickname, auto-registration and password policy settings
+--
 -- v0.0.06:
 --   - add persistent moderation and visibility attributes to accounts
 --   - add expiring restrictions and delegated privileges table
@@ -56,6 +60,17 @@ CREATE TABLE IF NOT EXISTS accounts (
     hide_operator_key BOOLEAN NOT NULL DEFAULT FALSE,
     hide_from_class SMALLINT NOT NULL DEFAULT -1,
     account_note TEXT NULL,
+    registered_by VARCHAR(64) NULL,
+    password_change_required BOOLEAN NOT NULL DEFAULT FALSE,
+    last_login_at TIMESTAMP NULL,
+    last_logout_at TIMESTAMP NULL,
+    login_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    last_login_ip VARCHAR(45) NULL,
+    auth_ip VARCHAR(45) NULL,
+    email VARCHAR(254) NULL,
+    public_note TEXT NULL,
+    hide_kick BOOLEAN NOT NULL DEFAULT FALSE,
+    hide_kick_through_class SMALLINT NOT NULL DEFAULT -2,
     INDEX idx_accounts_user_class (user_class),
     CONSTRAINT chk_accounts_user_class
         CHECK (user_class IN (-1, 0, 1, 2, 3, 4, 5, 10))
@@ -78,6 +93,19 @@ ALTER TABLE accounts
     ADD COLUMN IF NOT EXISTS hide_from_class SMALLINT NOT NULL DEFAULT -1,
     ADD COLUMN IF NOT EXISTS account_note TEXT NULL;
 
+ALTER TABLE accounts
+    ADD COLUMN IF NOT EXISTS registered_by VARCHAR(64) NULL,
+    ADD COLUMN IF NOT EXISTS password_change_required BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP NULL,
+    ADD COLUMN IF NOT EXISTS last_logout_at TIMESTAMP NULL,
+    ADD COLUMN IF NOT EXISTS login_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS last_login_ip VARCHAR(45) NULL,
+    ADD COLUMN IF NOT EXISTS auth_ip VARCHAR(45) NULL,
+    ADD COLUMN IF NOT EXISTS email VARCHAR(254) NULL,
+    ADD COLUMN IF NOT EXISTS public_note TEXT NULL,
+    ADD COLUMN IF NOT EXISTS hide_kick BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS hide_kick_through_class SMALLINT NOT NULL DEFAULT -2;
+
 CREATE TABLE IF NOT EXISTS user_timed_policies (
     account_id BIGINT UNSIGNED NOT NULL,
     policy_key VARCHAR(32) NOT NULL,
@@ -97,6 +125,36 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO settings(setting_key, setting_value) VALUES
+    ('key.class.permission.register.difference', '2'),
+    ('key.class.permission.kick.difference', '0'),
+    ('key.class.permission.pm.difference', '10'),
+    ('key.class.permission.download.difference', '10'),
+    ('key.class.minimum.usehub', '0'),
+    ('key.class.minimum.usehub.passive', '0'),
+    ('key.class.minimum.register', '3'),
+    ('key.class.minimum.redirect', '3'),
+    ('key.class.minimum.broadcast', '3'),
+    ('key.class.minimum.broadcast.guests', '3'),
+    ('key.class.minimum.broadcast.registered', '3'),
+    ('key.class.minimum.broadcast.vip', '3'),
+    ('key.class.minimum.plugin.modify', '5'),
+    ('key.class.minimum.topic.modify', '5'),
+    ('key.class.minimum.trigger.modify', '5'),
+    ('key.nick.length.maximum', '64'),
+    ('key.nick.length.minimum', '3'),
+    ('key.nick.characters.allowed', ''),
+    ('key.nick.prefix', ''),
+    ('key.nick.prefix.nocase', '0'),
+    ('key.nick.prefix.autoreg', ''),
+    ('key.nick.prefix.country', ''),
+    ('key.user.autoreg.class', '-1'),
+    ('key.user.autoreg.minimum.share.registered', '0'),
+    ('key.user.autoreg.minimum.share.vip', '0'),
+    ('key.user.autoreg.minimum.share.operator', '0'),
+    ('key.user.password.minimum.length', '8'),
+    ('key.user.password.initial.timeout', '300');
 
 -- user_class values:
 -- -1 = Hublist pingers

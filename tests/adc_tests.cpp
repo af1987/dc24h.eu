@@ -1,6 +1,9 @@
 /*
     adc_tests.cpp
 
+    v0.0.07:
+        - verify canonical 0.0.07 runtime release metadata
+
     v0.0.06:
         - verify canonical 0.0.06 runtime release metadata and provenance date
 
@@ -103,12 +106,12 @@ void run_protocol_tests() {
 }  // namespace dc24h::tests
 
 int main() {
-    assert(dc24h::version() == "0.0.06");
-    assert(dc24h::release_name() == "dc24h.eu-v0.0.06");
+    assert(dc24h::version() == "0.0.07");
+    assert(dc24h::release_name() == "dc24h.eu-v0.0.07");
     assert(dc24h::project_author() == "gpt-5.6-sol");
     assert(dc24h::project_date() == "2026-08-21");
     dc24h::tests::run_hash_tests();
     dc24h::tests::run_protocol_tests();
-    std::cout << "dc24h.eu v0.0.06 tests passed\n";
+    std::cout << "dc24h.eu v0.0.07 tests passed\n";
     return 0;
 }

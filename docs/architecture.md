@@ -1,6 +1,11 @@
 <!--
 architecture.md
 
+v0.0.07:
+  - add persistent hub settings and nickname admission policy
+  - add self-registration, account IP binding and password deadlines
+  - add account telemetry and kick-message filtering
+
 v0.0.06:
   - add persistent moderation attributes and expiring policies
   - add routing enforcement, delegated privileges and private OPChat
@@ -19,11 +24,11 @@ Author: gpt-5.6-sol
 Date: 2026-08-21
 -->
 
-# Architecture — dc24h.eu-v0.0.06
+# Architecture — dc24h.eu-v0.0.07
 
 ## Baseline
 
-`dc24h.eu` is a C++20 Direct Connect hub for Debian 13. It implements the ADC 1.0.4 BASE/TIGR profile, validates UTF-8, stores persistent state in MariaDB `utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.06 adds moderation enforcement and `ncdc` interoperability.
+`dc24h.eu` is a C++20 Direct Connect hub for Debian 13. It implements the ADC 1.0.4 BASE/TIGR profile, validates UTF-8, stores persistent state in MariaDB `utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.07 adds configurable class/nickname admission, controlled self-registration and account security metadata.
 
 ## Runtime flow
 
@@ -32,7 +37,7 @@ Date: 2026-08-21
 3. `Database` connects through MariaDB Connector/C and applies idempotent schema updates.
 4. `Server` listens on IPv4 TCP port 1511 by default and allocates a four-character ADC SID per connection.
 5. `AdcProtocol` negotiates BASE/TIGR in SUP, validates UTF-8/escaping, TIGR PID/CID identity, INF fields and B/D/E/F routing. BINF `SU` is not required to repeat SUP features.
-6. NORMAL-state `BMSG` text beginning with `!set ` or `+passwd ` is intercepted before broadcast.
+6. NORMAL-state `BMSG` text beginning with `!set `, `+passwd ` or `+regme ` is intercepted before broadcast.
 7. The server validates the loopback and class boundary, then delegates persistent operations to `UserCommandProcessor`/`Database` or evaluates live-session queries itself.
 8. Runtime policy snapshots filter INF and routed commands before delivery.
 9. The result is escaped and returned only to the requester as `IMSG`.
@@ -42,17 +47,18 @@ Date: 2026-08-21
 - `src/adc.cpp` / `src/adc.hpp`: ADC parsing, state machine and routing decisions.
 - `src/hash.cpp` / `src/hash.hpp`: ADC Base32 and TIGR identity derivation.
 - `src/user.cpp` / `src/user.hpp`: canonical numeric classes and PBKDF2-HMAC-SHA256 passwords.
+- `src/hub_settings.cpp` / `src/hub_settings.hpp`: canonical policy keys, normalization and nickname checks.
 - `src/user_commands.cpp` / `src/user_commands.hpp`: complete key grammar, duration parsing, validation and persistent command execution.
 - `src/database.cpp` / `src/database.hpp`: mutex-serialized MariaDB operations, account invariants and UTC-expiring policies.
 - `src/server.cpp` / `src/server.hpp`: listener, sessions, moderation enforcement, private OPChat, temporary classes, online IPv4 and optional reverse DNS.
 - `src/config.cpp` / `src/config.hpp`: runtime configuration including `dns_lookup=0|1`.
-- `src/version.cpp` / `src/version.hpp`: `0.0.06`, release identity, author and date.
+- `src/version.cpp` / `src/version.hpp`: `0.0.07`, release identity, author and date.
 
 Every production and test `*.cpp` has a matching `*.hpp` and vice versa.
 
 ## Persistent account model
 
-`accounts` contains identity/password/class state plus `kick_protect_class`, `hide_share`, `hide_operator_key`, `hide_from_class` and private `account_note`. `user_timed_policies` stores one UTC expiry per account/policy. Supported classes remain `-1, 0, 1, 2, 3, 4, 5, 10`; legacy `role` is not authoritative.
+`accounts` contains identity/password/class state, moderation fields, authentication IP, email/public note, kick-message visibility, password-change state and login/logout telemetry. `settings` stores validated class, nickname, self-registration and password policies. `user_timed_policies` stores one UTC expiry per account/policy. Supported classes remain `-1, 0, 1, 2, 3, 4, 5, 10`; legacy `role` is not authoritative.
 
 Passwords use salted PBKDF2-HMAC-SHA256 with 210000 iterations, a 16-byte random salt and a 32-byte derived key. Plaintext passwords and hashes are never returned in command messages. Password-presence information is reported only as `set`/`unset`.
 
@@ -93,7 +99,11 @@ Account information comes from MariaDB. IP and hostname information comes only f
 
 ## Trust boundaries
 
-ADC VERIFY (`GPA`/`PAS`) is not implemented in v0.0.06. Therefore management commands require IPv4 loopback plus an enabled effective Admin (5) or Master (10), except narrowly delegated `can_kick`/`can_register`, self-visibility and first-Master bootstrap. `+passwd` is also loopback-only.
+ADC VERIFY (`GPA`/`PAS`) is not implemented in v0.0.07. Management commands therefore require IPv4 loopback plus the configured class/capability boundary. `+passwd` and enabled `+regme` are explicit self-service exceptions; account IP binding is enforced during identification.
+
+## Hub policy and self-registration
+
+MariaDB-backed `key.class.*` values control registration/kick differences, PM/download class reach and minimum classes. `key.nick.*` values are checked before a session becomes NORMAL. `+regme` is disabled by default and, when enabled, checks the selected class, optional prefix, class-specific `SS` byte threshold and minimum password length. Passwordless registrations receive a deadline; the server disconnects an unchanged account after the configured timeout.
 
 ## Moderation and routing
 
@@ -107,4 +117,4 @@ Protected kick and non-punitive disconnect are separate live-session operations.
 
 The hub uses one worker thread per client. `clients_mutex_` protects live ADC state, `temporary_classes_mutex_` protects restart-scoped overrides, and `Database` serializes the MariaDB connection. DNS is executed outside the clients lock. The target deployment is Debian 13 with systemd, MariaDB, libmariadb and libgcrypt.
 
-See ADR-0010 for the v0.0.06 decisions, enforcement matrix and `ncdc` compatibility change.
+See ADR-0011 for the v0.0.07 policy model, admission boundaries and migration decisions.

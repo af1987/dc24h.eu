@@ -1,6 +1,10 @@
 <!--
 instructions.md
 
+v0.0.07:
+  - add policy-key, self-registration and account-metadata rules
+  - require paired hub-settings implementation and tests
+
 v0.0.06:
   - require timed moderation policy persistence and routing enforcement
   - define duration, protection, delegated privilege and ncdc test rules
@@ -31,7 +35,7 @@ Date: 2026-08-21
 
 # Engineering instructions
 
-These rules apply to `dc24h.eu-v0.0.06` and later changes.
+These rules apply to `dc24h.eu-v0.0.07` and later changes.
 
 ## Mandatory baseline
 
@@ -72,7 +76,10 @@ The command semantics are intentionally non-overlapping:
 - `key.user.change.username.password=[username.password]` replaces an existing password by nickname; an empty password resets it to SQL `NULL`.
 - `+passwd <password>` assigns only a missing password to the current enabled local account and must never overwrite an existing hash.
 - `key.user.info.userlist.class=[class]` returns all registered users in the selected class through the private response; `[]` defaults to class `0`, and enabled/password states are marked.
-- All account and moderation keys use the canonical forms documented in `docs/dc24h.eu-v0.0.06.md`.
+- All account, moderation and hub-policy keys use the canonical forms documented in `docs/dc24h.eu-v0.0.07.md`.
+- Global policy values are validated before storage in MariaDB; unknown keys and malformed values are rejected.
+- `+regme` must enforce configured class, nickname prefix, share and password rules.
+- Passwordless accounts receive a finite first-password deadline.
 - Removal, disabling or demotion of the final enabled Master (10) must be rejected.
 - A temporary class is memory-only, disappears on restart and cannot exceed Admin (5).
 - IP, range, subnet and hostname keys inspect active IPv4 sessions only and return private results.
@@ -86,7 +93,7 @@ The command semantics are intentionally non-overlapping:
 
 The live chat form uses the protected `!set ` prefix, for example `!set key.user.new.id.password=[5.StrongPassword]`.
 
-Until ADC VERIFY (`GPA`/`PAS`) authenticates registered users, remote nicknames are not sufficient authorization. The v0.0.06 path remains loopback-only with the documented Admin/Master, self-service and delegated capability checks.
+Until ADC VERIFY (`GPA`/`PAS`) authenticates registered users, remote nicknames are not sufficient management authorization. Protected `!set` remains loopback-only; only the documented `+passwd` and `+regme` self-service paths may run remotely. Optional account IP binding narrows the admission boundary.
 
 ## File history rule
 

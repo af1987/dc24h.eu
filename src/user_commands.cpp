@@ -3,6 +3,11 @@
 
     - hub-local user management command parser and executor
 
+        v0.0.07:
+            - parse persistent hub settings and +regme self-registration
+            - parse account IP, email, public-note and kick-message controls
+            - execute the new MariaDB-backed actions
+
         v0.0.06:
             - parse moderation, visibility, note and protected-kick keys
             - parse duration-based restrictions and delegated privileges
@@ -32,7 +37,9 @@
 #include "user_commands.hpp"
 
 #include "database.hpp"
+#include "hub_settings.hpp"
 
+#include <arpa/inet.h>
 #include <array>
 #include <charconv>
 #include <limits>
@@ -77,6 +84,7 @@ constexpr std::string_view users_by_range_prefix =
 constexpr std::string_view users_by_subnet_prefix =
     "!set key.user.info.userlist.subnet=[";
 constexpr std::string_view self_password_prefix = "+passwd ";
+constexpr std::string_view self_register_prefix = "+regme ";
 constexpr std::string_view disconnect_prefix =
     "!set key.user.disconnect.username=[";
 constexpr std::string_view kick_prefix =
@@ -91,6 +99,18 @@ constexpr std::string_view note_prefix =
     "!set key.user.note.username=[";
 constexpr std::string_view self_visibility_prefix =
     "!set key.user.self.hide.class=[";
+constexpr std::string_view auth_ip_prefix =
+    "!set key.user.auth.ip.username=[";
+constexpr std::string_view auth_ip_remove_prefix =
+    "!set key.user.auth.ip.remove.username=[";
+constexpr std::string_view email_prefix =
+    "!set key.user.email.username=[";
+constexpr std::string_view public_note_prefix =
+    "!set key.user.note.public.username=[";
+constexpr std::string_view hide_kick_prefix =
+    "!set key.user.hide.kick.username=[";
+constexpr std::string_view hide_kick_class_prefix =
+    "!set key.user.hide.kick.username.class=[";
 
 struct TimedKeyDefinition {
     std::string_view prefix;
@@ -134,8 +154,7 @@ bool unwrap(std::string_view command,
 bool valid_username(std::string_view username) noexcept {
     if (username.empty() || username.size() > 64U) return false;
     for (const unsigned char ch : username) {
-        if (ch <= 0x20U || ch == 0x7FU || ch == '.' ||
-            ch == '[' || ch == ']') return false;
+        if (ch <= 0x20U || ch == 0x7FU || ch == '.') return false;
     }
     return true;
 }
@@ -183,6 +202,26 @@ bool valid_note(std::string_view note) noexcept {
         if ((ch < 0x20U && ch != '\t') || ch == 0x7FU) return false;
     }
     return true;
+}
+
+bool valid_email(std::string_view email) noexcept {
+    if (email.empty()) return true;
+    if (email.size() > 254U || email.front() == '@' || email.back() == '@') {
+        return false;
+    }
+    const auto at = email.find('@');
+    if (at == std::string_view::npos ||
+        email.find('@', at + 1U) != std::string_view::npos) return false;
+    for (const unsigned char character : email) {
+        if (character <= 0x20U || character == 0x7FU ||
+            character == '[' || character == ']') return false;
+    }
+    return true;
+}
+
+bool valid_ipv4(std::string_view value) noexcept {
+    in_addr address{};
+    return ::inet_pton(AF_INET, std::string(value).c_str(), &address) == 1;
 }
 
 std::optional<std::uint64_t> parse_duration(
@@ -412,6 +451,17 @@ std::optional<UserSetCommand> UserCommandProcessor::parse(
     error.clear();
     std::string_view payload;
 
+    if (command.starts_with(self_register_prefix)) {
+        const auto password = command.substr(self_register_prefix.size());
+        if (!valid_password(password)) {
+            error = "password must be 8-1024 printable UTF-8 bytes";
+            return std::nullopt;
+        }
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::self_register;
+        parsed.password = std::string(password);
+        return parsed;
+    }
     if (command.starts_with(self_password_prefix)) {
         const auto password = command.substr(self_password_prefix.size());
         if (!valid_password(password)) {
@@ -525,6 +575,71 @@ std::optional<UserSetCommand> UserCommandProcessor::parse(
         parsed.user_class = *user_class;
         return parsed;
     }
+    if (unwrap(command, auth_ip_remove_prefix, payload)) {
+        return parse_username(payload, UserSetAction::remove_auth_ip, error);
+    }
+    if (unwrap(command, auth_ip_prefix, payload)) {
+        const auto dot = payload.find('.');
+        if (dot == std::string_view::npos) {
+            error = "expected [username.IPv4]";
+            return std::nullopt;
+        }
+        const auto username = payload.substr(0, dot);
+        const auto address = payload.substr(dot + 1U);
+        if (!valid_username(username) || !valid_ipv4(address)) {
+            error = "invalid username or IPv4 address";
+            return std::nullopt;
+        }
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::set_auth_ip;
+        parsed.username = std::string(username);
+        parsed.query = std::string(address);
+        return parsed;
+    }
+    if (unwrap(command, email_prefix, payload, true)) {
+        const auto dot = payload.find('.');
+        if (dot == std::string_view::npos) {
+            error = "expected [username.email]";
+            return std::nullopt;
+        }
+        const auto username = payload.substr(0, dot);
+        const auto email = payload.substr(dot + 1U);
+        if (!valid_username(username) || !valid_email(email)) {
+            error = "invalid username or email";
+            return std::nullopt;
+        }
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::set_email;
+        parsed.username = std::string(username);
+        parsed.query = std::string(email);
+        return parsed;
+    }
+    if (unwrap(command, public_note_prefix, payload, true)) {
+        const auto dot = payload.find('.');
+        if (dot == std::string_view::npos) {
+            error = "expected [username.note]";
+            return std::nullopt;
+        }
+        const auto username = payload.substr(0, dot);
+        const auto note = payload.substr(dot + 1U);
+        if (!valid_username(username) || !valid_note(note)) {
+            error = "invalid username or public note";
+            return std::nullopt;
+        }
+        UserSetCommand parsed;
+        parsed.action = UserSetAction::set_public_note;
+        parsed.username = std::string(username);
+        parsed.note = std::string(note);
+        return parsed;
+    }
+    if (unwrap(command, hide_kick_class_prefix, payload)) {
+        return parse_username_class(
+            payload, UserSetAction::set_hide_kick_class, false, error);
+    }
+    if (unwrap(command, hide_kick_prefix, payload)) {
+        return parse_username_flag(
+            payload, UserSetAction::set_hide_kick, error);
+    }
     for (const auto& definition : timed_keys) {
         if (!command.starts_with(definition.prefix)) continue;
         if (!unwrap(command, definition.prefix, payload)) {
@@ -581,6 +696,24 @@ std::optional<UserSetCommand> UserCommandProcessor::parse(
                            UserSetAction::find_users_by_subnet);
     }
 
+    if (command.starts_with("!set key.")) {
+        constexpr std::string_view prefix = "!set ";
+        const auto assignment = command.find("=[", prefix.size());
+        if (assignment != std::string_view::npos && command.back() == ']') {
+            const auto key = command.substr(
+                prefix.size(), assignment - prefix.size());
+            const auto value = command.substr(
+                assignment + 2U, command.size() - assignment - 3U);
+            const auto normalized = normalize_hub_setting(key, value, error);
+            if (!normalized.has_value()) return std::nullopt;
+            UserSetCommand parsed;
+            parsed.action = UserSetAction::set_hub_setting;
+            parsed.setting_key = std::string(key);
+            parsed.setting_value = *normalized;
+            return parsed;
+        }
+    }
+
     error = "unknown !set user key";
     return std::nullopt;
 }
@@ -599,14 +732,17 @@ UserSetResult UserCommandProcessor::execute(const UserSetCommand& command) {
                 const auto id = database_.create_user(
                     command.username,
                     command.user_class,
-                    hash_password(command.password));
+                    hash_password(command.password),
+                    command.actor_username);
                 return {true, "user created: id=" + std::to_string(id) +
                     " username=" + command.username + " class=" +
                     std::to_string(static_cast<std::int16_t>(command.user_class))};
             }
             case UserSetAction::create_user_without_password: {
                 const auto id = database_.create_user_without_password(
-                    command.username, command.user_class);
+                    command.username,
+                    command.user_class,
+                    command.actor_username);
                 return {true, "user created without password: id=" +
                     std::to_string(id) + " username=" + command.username +
                     " class=" +
@@ -726,6 +862,52 @@ UserSetResult UserCommandProcessor::execute(const UserSetCommand& command) {
                 return {true, command.note.empty()
                     ? "account note removed: username=" + command.username
                     : "account note stored: username=" + command.username};
+            case UserSetAction::set_auth_ip:
+                if (!database_.set_user_auth_ip(
+                        command.username,
+                        std::optional<std::string>{command.query})) {
+                    return {false, "registered username not found"};
+                }
+                return {true, "authentication IPv4 changed: username=" +
+                    command.username + " address=" + command.query};
+            case UserSetAction::remove_auth_ip:
+                if (!database_.set_user_auth_ip(command.username, std::nullopt)) {
+                    return {false, "registered username not found"};
+                }
+                return {true, "authentication IPv4 removed: username=" +
+                    command.username};
+            case UserSetAction::set_email:
+                if (!database_.set_user_email(command.username, command.query)) {
+                    return {false, "registered username not found"};
+                }
+                return {true, command.query.empty()
+                    ? "email removed: username=" + command.username
+                    : "email stored: username=" + command.username};
+            case UserSetAction::set_public_note:
+                if (!database_.set_user_public_note(
+                        command.username, command.note)) {
+                    return {false, "registered username not found"};
+                }
+                return {true, command.note.empty()
+                    ? "public note removed: username=" + command.username
+                    : "public note stored: username=" + command.username};
+            case UserSetAction::set_hide_kick:
+                if (!database_.set_hide_kick(
+                        command.username, command.enabled)) {
+                    return {false, "registered username not found"};
+                }
+                return {true, "kick-message visibility changed: username=" +
+                    command.username + " hidden=" +
+                    (command.enabled ? "yes" : "no")};
+            case UserSetAction::set_hide_kick_class:
+                if (!database_.set_hide_kick_through_class(
+                        command.username,
+                        static_cast<std::int16_t>(command.user_class))) {
+                    return {false, "registered username not found"};
+                }
+                return {true, "kick-message class threshold changed: username=" +
+                    command.username + " hidden_through_class=" +
+                    std::to_string(static_cast<std::int16_t>(command.user_class))};
             case UserSetAction::set_self_visibility:
                 if (!database_.set_hide_from_class(
                         command.username,
@@ -775,8 +957,22 @@ UserSetResult UserCommandProcessor::execute(const UserSetCommand& command) {
                     " (" + std::string(user_class_name(details->user_class)) + ")" +
                     " enabled=" + (details->enabled ? "yes" : "no") +
                     " password=" + (details->has_password ? "set" : "unset") +
-                    " created_at=" + details->created_at +
+                    " registered_at=" + details->created_at +
+                    " registered_by=" +
+                    (details->registered_by.empty() ? "<unknown>" : details->registered_by) +
                     " updated_at=" + details->updated_at +
+                    " last_login_at=" +
+                    (details->last_login_at.empty() ? "<never>" : details->last_login_at) +
+                    " last_logout_at=" +
+                    (details->last_logout_at.empty() ? "<never>" : details->last_logout_at) +
+                    " login_count=" + std::to_string(details->login_count) +
+                    " last_login_ip=" +
+                    (details->last_login_ip.empty() ? "<none>" : details->last_login_ip) +
+                    " email=" + (details->email.empty() ? "<empty>" : details->email) +
+                    " password_change_required=" +
+                    (details->password_change_required ? "yes" : "no") +
+                    " auth_ip=" +
+                    (details->auth_ip.empty() ? "<any>" : details->auth_ip) +
                     " kick_protect_class=" +
                     std::to_string(details->kick_protect_class) +
                     " hide_share=" + (details->hide_share ? "yes" : "no") +
@@ -784,8 +980,13 @@ UserSetResult UserCommandProcessor::execute(const UserSetCommand& command) {
                     (details->hide_operator_key ? "yes" : "no") +
                     " visible_from_class=" +
                     std::to_string(details->hide_from_class) +
+                    " hide_kick=" + (details->hide_kick ? "yes" : "no") +
+                    " hide_kick_through_class=" +
+                    std::to_string(details->hide_kick_through_class) +
                     " timed_policies=" + policies +
-                    " note=" + (details->note.empty() ? "<empty>" : details->note)};
+                    " note=" + (details->note.empty() ? "<empty>" : details->note) +
+                    " public_note=" +
+                    (details->public_note.empty() ? "<empty>" : details->public_note)};
             }
             case UserSetAction::self_add_password: {
                 const auto outcome = database_.add_user_password_if_missing(
@@ -798,6 +999,24 @@ UserSetResult UserCommandProcessor::execute(const UserSetCommand& command) {
                 }
                 return {false, "enabled registered username not found"};
             }
+            case UserSetAction::self_register: {
+                const auto id = database_.create_user(
+                    command.username,
+                    command.user_class,
+                    hash_password(command.password),
+                    command.username);
+                return {true, "self-registration complete: id=" +
+                    std::to_string(id) + " username=" + command.username +
+                    " class=" +
+                    std::to_string(static_cast<std::int16_t>(command.user_class))};
+            }
+            case UserSetAction::set_hub_setting:
+                if (!database_.set_hub_setting(
+                        command.setting_key, command.setting_value)) {
+                    return {false, "invalid hub setting"};
+                }
+                return {true, "hub setting changed: " + command.setting_key +
+                    "=" + command.setting_value};
             default:
                 return {false, "command requires live session state"};
         }

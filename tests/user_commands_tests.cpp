@@ -3,6 +3,11 @@
 
     - user command and password helper regression tests
 
+        v0.0.07:
+            - test every class, nickname and auto-registration setting key
+            - test +regme and account profile/security keys
+            - test nickname length, characters and prefix validation
+
         v0.0.06:
             - test moderation, visibility, notes and live disconnect/kick keys
             - test all timed restriction and delegated-privilege defaults
@@ -33,6 +38,7 @@
 #include "user_commands_tests.hpp"
 
 #include "user.hpp"
+#include "hub_settings.hpp"
 #include "user_commands.hpp"
 
 #include <array>
@@ -261,6 +267,101 @@ void run_user_command_tests() {
     assert(remove_gag.has_value());
     assert(remove_gag->action == UserSetAction::remove_timed_policy);
     assert(remove_gag->policy_key == "gag");
+
+    const auto regme = UserCommandProcessor::parse(
+        "+regme SelfPass123", error);
+    assert(regme.has_value());
+    assert(regme->action == UserSetAction::self_register);
+
+    const auto prefixed_auth_ip = UserCommandProcessor::parse(
+        "!set key.user.auth.ip.username=[[AUTO]tester.127.0.0.1]", error);
+    assert(prefixed_auth_ip.has_value());
+    assert(prefixed_auth_ip->username == "[AUTO]tester");
+
+    constexpr std::array<const char*, 28> setting_commands{{
+        "!set key.class.permission.register.difference=[2]",
+        "!set key.class.permission.kick.difference=[0]",
+        "!set key.class.permission.pm.difference=[10]",
+        "!set key.class.permission.download.difference=[10]",
+        "!set key.class.minimum.usehub=[0]",
+        "!set key.class.minimum.usehub.passive=[0]",
+        "!set key.class.minimum.register=[3]",
+        "!set key.class.minimum.redirect=[3]",
+        "!set key.class.minimum.broadcast=[3]",
+        "!set key.class.minimum.broadcast.guests=[3]",
+        "!set key.class.minimum.broadcast.registered=[3]",
+        "!set key.class.minimum.broadcast.vip=[3]",
+        "!set key.class.minimum.plugin.modify=[5]",
+        "!set key.class.minimum.topic.modify=[5]",
+        "!set key.class.minimum.trigger.modify=[5]",
+        "!set key.nick.length.maximum=[32]",
+        "!set key.nick.length.minimum=[3]",
+        "!set key.nick.characters.allowed=[abcdefghijklmnopqrstuvwxyz]",
+        "!set key.nick.prefix=[[EU]]",
+        "!set key.nick.prefix.nocase=[1]",
+        "!set key.nick.prefix.autoreg=[[AUTO]]",
+        "!set key.nick.prefix.country=[[US]]",
+        "!set key.user.autoreg.class=[1]",
+        "!set key.user.autoreg.minimum.share.registered=[1024]",
+        "!set key.user.autoreg.minimum.share.vip=[2048]",
+        "!set key.user.autoreg.minimum.share.operator=[4096]",
+        "!set key.user.password.minimum.length=[10]",
+        "!set key.user.password.initial.timeout=[300]"
+    }};
+    for (const auto* command : setting_commands) {
+        const auto setting = UserCommandProcessor::parse(command, error);
+        assert(setting.has_value());
+        assert(setting->action == UserSetAction::set_hub_setting);
+        assert(!setting->setting_key.empty());
+    }
+
+    const auto timeout_alias = UserCommandProcessor::parse(
+        "!set key.account.password.setup.timeout=[600]", error);
+    assert(timeout_alias.has_value());
+    assert(timeout_alias->setting_value == "600");
+
+    const auto auth_ip = UserCommandProcessor::parse(
+        "!set key.user.auth.ip.username=[alice.127.0.0.1]", error);
+    assert(auth_ip.has_value());
+    assert(auth_ip->action == UserSetAction::set_auth_ip);
+    assert(auth_ip->query == "127.0.0.1");
+
+    const auto remove_auth_ip = UserCommandProcessor::parse(
+        "!set key.user.auth.ip.remove.username=[alice]", error);
+    assert(remove_auth_ip.has_value());
+    assert(remove_auth_ip->action == UserSetAction::remove_auth_ip);
+
+    const auto email = UserCommandProcessor::parse(
+        "!set key.user.email.username=[alice.alice@example.com]", error);
+    assert(email.has_value());
+    assert(email->action == UserSetAction::set_email);
+
+    const auto public_note = UserCommandProcessor::parse(
+        "!set key.user.note.public.username=[alice.Visible note]", error);
+    assert(public_note.has_value());
+    assert(public_note->action == UserSetAction::set_public_note);
+
+    const auto hide_kick = UserCommandProcessor::parse(
+        "!set key.user.hide.kick.username=[alice.1]", error);
+    assert(hide_kick.has_value());
+    assert(hide_kick->action == UserSetAction::set_hide_kick);
+
+    const auto hide_kick_class = UserCommandProcessor::parse(
+        "!set key.user.hide.kick.username.class=[alice.3]", error);
+    assert(hide_kick_class.has_value());
+    assert(hide_kick_class->action == UserSetAction::set_hide_kick_class);
+
+    HubSettings settings;
+    settings.nick_length_minimum = 3;
+    settings.nick_length_maximum = 12;
+    settings.nick_prefix = "[US],[EU]";
+    settings.nick_prefix_nocase = true;
+    assert(nickname_allowed("[us]Alice", settings, error));
+    assert(!nickname_allowed("Alice", settings, error));
+    settings.nick_prefix.clear();
+    settings.nick_characters_allowed = "abcdefghijklmnopqrstuvwxyz";
+    assert(nickname_allowed("alice", settings, error));
+    assert(!nickname_allowed("alice1", settings, error));
 
     const auto invalid_flag = UserCommandProcessor::parse(
         "!set key.user.hide.share.username=[alice.2]", error);

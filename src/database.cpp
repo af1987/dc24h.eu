@@ -3,6 +3,11 @@
 
     - MariaDB persistence implementation
 
+        v0.0.07:
+            - migrate account controls and authentication telemetry
+            - seed and load validated hub settings
+            - persist auto-registration and account profile updates
+
         v0.0.06:
             - persist moderation attributes and private account notes
             - add expiring restriction/privilege rows with validated policy keys
@@ -129,6 +134,17 @@ void Database::initialize_schema() {
         "hide_operator_key BOOLEAN NOT NULL DEFAULT FALSE,"
         "hide_from_class SMALLINT NOT NULL DEFAULT -1,"
         "account_note TEXT NULL,"
+        "registered_by VARCHAR(64) NULL,"
+        "password_change_required BOOLEAN NOT NULL DEFAULT FALSE,"
+        "last_login_at TIMESTAMP NULL,"
+        "last_logout_at TIMESTAMP NULL,"
+        "login_count BIGINT UNSIGNED NOT NULL DEFAULT 0,"
+        "last_login_ip VARCHAR(45) NULL,"
+        "auth_ip VARCHAR(45) NULL,"
+        "email VARCHAR(254) NULL,"
+        "public_note TEXT NULL,"
+        "hide_kick BOOLEAN NOT NULL DEFAULT FALSE,"
+        "hide_kick_through_class SMALLINT NOT NULL DEFAULT -2,"
         "INDEX idx_accounts_user_class (user_class)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
@@ -159,6 +175,32 @@ void Database::initialize_schema() {
         "SMALLINT NOT NULL DEFAULT -1");
     execute_locked(
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS account_note TEXT NULL");
+    execute_locked(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS registered_by VARCHAR(64) NULL");
+    execute_locked(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS password_change_required "
+        "BOOLEAN NOT NULL DEFAULT FALSE");
+    execute_locked(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP NULL");
+    execute_locked(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_logout_at TIMESTAMP NULL");
+    execute_locked(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS login_count "
+        "BIGINT UNSIGNED NOT NULL DEFAULT 0");
+    execute_locked(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS last_login_ip VARCHAR(45) NULL");
+    execute_locked(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS auth_ip VARCHAR(45) NULL");
+    execute_locked(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email VARCHAR(254) NULL");
+    execute_locked(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS public_note TEXT NULL");
+    execute_locked(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS hide_kick "
+        "BOOLEAN NOT NULL DEFAULT FALSE");
+    execute_locked(
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS hide_kick_through_class "
+        "SMALLINT NOT NULL DEFAULT -2");
 
     execute_locked(
         "CREATE TABLE IF NOT EXISTS user_timed_policies ("
@@ -181,6 +223,43 @@ void Database::initialize_schema() {
         "updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP "
         "ON UPDATE CURRENT_TIMESTAMP"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 28>
+        defaults{{
+            {"key.class.permission.register.difference", "2"},
+            {"key.class.permission.kick.difference", "0"},
+            {"key.class.permission.pm.difference", "10"},
+            {"key.class.permission.download.difference", "10"},
+            {"key.class.minimum.usehub", "0"},
+            {"key.class.minimum.usehub.passive", "0"},
+            {"key.class.minimum.register", "3"},
+            {"key.class.minimum.redirect", "3"},
+            {"key.class.minimum.broadcast", "3"},
+            {"key.class.minimum.broadcast.guests", "3"},
+            {"key.class.minimum.broadcast.registered", "3"},
+            {"key.class.minimum.broadcast.vip", "3"},
+            {"key.class.minimum.plugin.modify", "5"},
+            {"key.class.minimum.topic.modify", "5"},
+            {"key.class.minimum.trigger.modify", "5"},
+            {"key.nick.length.maximum", "64"},
+            {"key.nick.length.minimum", "3"},
+            {"key.nick.characters.allowed", ""},
+            {"key.nick.prefix", ""},
+            {"key.nick.prefix.nocase", "0"},
+            {"key.nick.prefix.autoreg", ""},
+            {"key.nick.prefix.country", ""},
+            {"key.user.autoreg.class", "-1"},
+            {"key.user.autoreg.minimum.share.registered", "0"},
+            {"key.user.autoreg.minimum.share.vip", "0"},
+            {"key.user.autoreg.minimum.share.operator", "0"},
+            {"key.user.password.minimum.length", "8"},
+            {"key.user.password.initial.timeout", "300"}
+        }};
+    for (const auto& [key, value] : defaults) {
+        execute_locked(
+            "INSERT IGNORE INTO settings(setting_key,setting_value) VALUES('" +
+            escape_locked(key) + "','" + escape_locked(value) + "')");
+    }
 }
 
 void Database::record_event(std::string_view sid,
@@ -198,7 +277,8 @@ void Database::record_event(std::string_view sid,
 
 std::uint64_t Database::create_user(std::string_view username,
                                     UserClass user_class,
-                                    std::string_view password_hash) {
+                                    std::string_view password_hash,
+                                    std::string_view registered_by) {
     const auto class_value = static_cast<std::int16_t>(user_class);
     if (!is_valid_user_class(class_value)) {
         throw std::invalid_argument("invalid user class");
@@ -207,12 +287,16 @@ std::uint64_t Database::create_user(std::string_view username,
     std::lock_guard lock(mutex_);
     const auto username_sql = escape_locked(username);
     const auto password_sql = escape_locked(password_hash);
+    const auto registered_by_sql = escape_locked(registered_by);
 
     if (mysql_query(
             connection_,
-            ("INSERT INTO accounts(nick,password_hash,user_class,enabled) "
-             "VALUES('" + username_sql + "','" + password_sql + "'," +
-             std::to_string(class_value) + ",TRUE)")
+            ("INSERT INTO accounts(nick,password_hash,user_class,enabled,"
+             "registered_by,password_change_required) VALUES('" + username_sql +
+             "','" + password_sql + "'," + std::to_string(class_value) +
+             ",TRUE," + (registered_by.empty()
+                 ? std::string("NULL")
+                 : "'" + registered_by_sql + "'") + ",FALSE)")
                 .c_str()) != 0) {
         const auto error_number = mysql_errno(connection_);
         if (error_number == 1062U) {
@@ -228,7 +312,8 @@ std::uint64_t Database::create_user(std::string_view username,
 
 std::uint64_t Database::create_user_without_password(
     std::string_view username,
-    UserClass user_class) {
+    UserClass user_class,
+    std::string_view registered_by) {
     const auto class_value = static_cast<std::int16_t>(user_class);
     if (!is_valid_user_class(class_value)) {
         throw std::invalid_argument("invalid user class");
@@ -236,12 +321,16 @@ std::uint64_t Database::create_user_without_password(
 
     std::lock_guard lock(mutex_);
     const auto username_sql = escape_locked(username);
+    const auto registered_by_sql = escape_locked(registered_by);
 
     if (mysql_query(
             connection_,
-            ("INSERT INTO accounts(nick,password_hash,user_class,enabled) "
-             "VALUES('" + username_sql + "',NULL," +
-             std::to_string(class_value) + ",TRUE)")
+            ("INSERT INTO accounts(nick,password_hash,user_class,enabled,"
+             "registered_by,password_change_required) VALUES('" + username_sql +
+             "',NULL," + std::to_string(class_value) + ",TRUE," +
+             (registered_by.empty() ? std::string("NULL")
+                                    : "'" + registered_by_sql + "'") +
+             ",TRUE)")
                 .c_str()) != 0) {
         const auto error_number = mysql_errno(connection_);
         if (error_number == 1062U) {
@@ -265,7 +354,8 @@ bool Database::update_user_password_by_id(
 
     execute_locked(
         "UPDATE accounts SET password_hash='" + password_sql +
-        "' WHERE id=" + std::to_string(user_id) + " AND enabled=TRUE");
+        "',password_change_required=FALSE WHERE id=" +
+        std::to_string(user_id) + " AND enabled=TRUE");
 
     return mysql_affected_rows(connection_) == 1;
 }
@@ -281,6 +371,8 @@ bool Database::update_user_password_by_username(
 
     execute_locked(
         "UPDATE accounts SET password_hash=" + password_sql +
+        ",password_change_required=" +
+        std::string(password_hash.has_value() ? "FALSE" : "TRUE") +
         " WHERE nick='" + username_sql + "'");
 
     if (mysql_affected_rows(connection_) == 1) return true;
@@ -307,7 +399,7 @@ AddPasswordResult Database::add_user_password_if_missing(
 
     execute_locked(
         "UPDATE accounts SET password_hash='" + password_sql +
-        "' WHERE id=" + std::to_string(user_id) +
+        "',password_change_required=FALSE WHERE id=" + std::to_string(user_id) +
         " AND enabled=TRUE AND (password_hash IS NULL OR password_hash='')");
 
     if (mysql_affected_rows(connection_) == 1) {
@@ -347,7 +439,7 @@ AddPasswordResult Database::add_user_password_if_missing(
 
     execute_locked(
         "UPDATE accounts SET password_hash='" + password_sql +
-        "' WHERE nick='" + username_sql +
+        "',password_change_required=FALSE WHERE nick='" + username_sql +
         "' AND enabled=TRUE AND (password_hash IS NULL OR password_hash='')");
 
     if (mysql_affected_rows(connection_) == 1) {
@@ -424,7 +516,11 @@ std::optional<UserDetails> Database::user_details(
         "SELECT id,nick,user_class,enabled,"
         "password_hash IS NOT NULL AND password_hash<>'',created_at,updated_at,"
         "kick_protect_class,hide_share,hide_operator_key,hide_from_class,"
-        "COALESCE(account_note,'') "
+        "COALESCE(account_note,''),COALESCE(registered_by,''),"
+        "password_change_required,COALESCE(last_login_at,''),"
+        "COALESCE(last_logout_at,''),login_count,COALESCE(last_login_ip,''),"
+        "COALESCE(auth_ip,''),COALESCE(email,''),COALESCE(public_note,''),"
+        "hide_kick,hide_kick_through_class "
         "FROM accounts WHERE nick='" + username_sql + "' LIMIT 1");
 
     MYSQL_RES* result = mysql_store_result(connection_);
@@ -442,12 +538,16 @@ std::optional<UserDetails> Database::user_details(
     int class_value = 0;
     int protect_class = -2;
     int hide_from_class = -1;
+    int hide_kick_through_class = -2;
     std::uint64_t id = 0;
+    std::uint64_t login_count = 0;
     try {
         id = static_cast<std::uint64_t>(std::stoull(row[0]));
         class_value = std::stoi(row[2]);
         if (row[7] != nullptr) protect_class = std::stoi(row[7]);
         if (row[10] != nullptr) hide_from_class = std::stoi(row[10]);
+        if (row[16] != nullptr) login_count = std::stoull(row[16]);
+        if (row[22] != nullptr) hide_kick_through_class = std::stoi(row[22]);
     } catch (...) {
         mysql_free_result(result);
         throw std::runtime_error("invalid account data stored in database");
@@ -458,7 +558,9 @@ std::optional<UserDetails> Database::user_details(
         protect_class < std::numeric_limits<std::int16_t>::min() ||
         protect_class > std::numeric_limits<std::int16_t>::max() ||
         hide_from_class < std::numeric_limits<std::int16_t>::min() ||
-        hide_from_class > std::numeric_limits<std::int16_t>::max()) {
+        hide_from_class > std::numeric_limits<std::int16_t>::max() ||
+        hide_kick_through_class < std::numeric_limits<std::int16_t>::min() ||
+        hide_kick_through_class > std::numeric_limits<std::int16_t>::max()) {
         mysql_free_result(result);
         throw std::runtime_error("user_class is outside SMALLINT range");
     }
@@ -469,20 +571,32 @@ std::optional<UserDetails> Database::user_details(
         throw std::runtime_error("unsupported user_class stored in database");
     }
 
-    UserDetails details{
-        id,
-        row[1] == nullptr ? std::string{} : std::string(row[1]),
-        *parsed_class,
-        row[3] != nullptr && std::string_view(row[3]) == "1",
-        row[4] != nullptr && std::string_view(row[4]) == "1",
-        row[5] == nullptr ? std::string{} : std::string(row[5]),
-        row[6] == nullptr ? std::string{} : std::string(row[6]),
-        static_cast<std::int16_t>(protect_class),
-        row[8] != nullptr && std::string_view(row[8]) == "1",
-        row[9] != nullptr && std::string_view(row[9]) == "1",
-        static_cast<std::int16_t>(hide_from_class),
-        row[11] == nullptr ? std::string{} : std::string(row[11])
-    };
+    UserDetails details;
+    details.id = id;
+    details.username = row[1] == nullptr ? std::string{} : std::string(row[1]);
+    details.user_class = *parsed_class;
+    details.enabled = row[3] != nullptr && std::string_view(row[3]) == "1";
+    details.has_password = row[4] != nullptr && std::string_view(row[4]) == "1";
+    details.created_at = row[5] == nullptr ? std::string{} : std::string(row[5]);
+    details.updated_at = row[6] == nullptr ? std::string{} : std::string(row[6]);
+    details.kick_protect_class = static_cast<std::int16_t>(protect_class);
+    details.hide_share = row[8] != nullptr && std::string_view(row[8]) == "1";
+    details.hide_operator_key = row[9] != nullptr && std::string_view(row[9]) == "1";
+    details.hide_from_class = static_cast<std::int16_t>(hide_from_class);
+    details.note = row[11] == nullptr ? std::string{} : std::string(row[11]);
+    details.registered_by = row[12] == nullptr ? std::string{} : std::string(row[12]);
+    details.password_change_required =
+        row[13] != nullptr && std::string_view(row[13]) == "1";
+    details.last_login_at = row[14] == nullptr ? std::string{} : std::string(row[14]);
+    details.last_logout_at = row[15] == nullptr ? std::string{} : std::string(row[15]);
+    details.login_count = login_count;
+    details.last_login_ip = row[17] == nullptr ? std::string{} : std::string(row[17]);
+    details.auth_ip = row[18] == nullptr ? std::string{} : std::string(row[18]);
+    details.email = row[19] == nullptr ? std::string{} : std::string(row[19]);
+    details.public_note = row[20] == nullptr ? std::string{} : std::string(row[20]);
+    details.hide_kick = row[21] != nullptr && std::string_view(row[21]) == "1";
+    details.hide_kick_through_class =
+        static_cast<std::int16_t>(hide_kick_through_class);
     mysql_free_result(result);
     return details;
 }
@@ -728,6 +842,109 @@ bool Database::set_user_note(std::string_view username,
     return found;
 }
 
+bool Database::set_user_auth_ip(
+    std::string_view username,
+    const std::optional<std::string>& address) {
+    std::lock_guard lock(mutex_);
+    const auto username_sql = escape_locked(username);
+    const auto address_sql = address.has_value()
+        ? "'" + escape_locked(*address) + "'"
+        : std::string("NULL");
+    execute_locked(
+        "UPDATE accounts SET auth_ip=" + address_sql + " WHERE nick='" +
+        username_sql + "'");
+    if (mysql_affected_rows(connection_) == 1) return true;
+    execute_locked(
+        "SELECT 1 FROM accounts WHERE nick='" + username_sql + "' LIMIT 1");
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) throw std::runtime_error(
+        "MariaDB result failed: " + std::string(mysql_error(connection_)));
+    const bool found = mysql_fetch_row(result) != nullptr;
+    mysql_free_result(result);
+    return found;
+}
+
+bool Database::set_user_email(std::string_view username,
+                              std::string_view email) {
+    std::lock_guard lock(mutex_);
+    const auto username_sql = escape_locked(username);
+    const auto email_sql = escape_locked(email);
+    execute_locked(
+        "UPDATE accounts SET email=" +
+        (email.empty() ? std::string("NULL") : "'" + email_sql + "'") +
+        " WHERE nick='" + username_sql + "'");
+    if (mysql_affected_rows(connection_) == 1) return true;
+    execute_locked(
+        "SELECT 1 FROM accounts WHERE nick='" + username_sql + "' LIMIT 1");
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) throw std::runtime_error(
+        "MariaDB result failed: " + std::string(mysql_error(connection_)));
+    const bool found = mysql_fetch_row(result) != nullptr;
+    mysql_free_result(result);
+    return found;
+}
+
+bool Database::set_user_public_note(std::string_view username,
+                                    std::string_view note) {
+    std::lock_guard lock(mutex_);
+    const auto username_sql = escape_locked(username);
+    const auto note_sql = escape_locked(note);
+    execute_locked(
+        "UPDATE accounts SET public_note=" +
+        (note.empty() ? std::string("NULL") : "'" + note_sql + "'") +
+        " WHERE nick='" + username_sql + "'");
+    if (mysql_affected_rows(connection_) == 1) return true;
+    execute_locked(
+        "SELECT 1 FROM accounts WHERE nick='" + username_sql + "' LIMIT 1");
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) throw std::runtime_error(
+        "MariaDB result failed: " + std::string(mysql_error(connection_)));
+    const bool found = mysql_fetch_row(result) != nullptr;
+    mysql_free_result(result);
+    return found;
+}
+
+bool Database::set_hide_kick(std::string_view username, bool hidden) {
+    std::lock_guard lock(mutex_);
+    const auto username_sql = escape_locked(username);
+    execute_locked(
+        "UPDATE accounts SET hide_kick=" +
+        std::string(hidden ? "TRUE" : "FALSE") + " WHERE nick='" +
+        username_sql + "'");
+    if (mysql_affected_rows(connection_) == 1) return true;
+    execute_locked(
+        "SELECT 1 FROM accounts WHERE nick='" + username_sql + "' LIMIT 1");
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) throw std::runtime_error(
+        "MariaDB result failed: " + std::string(mysql_error(connection_)));
+    const bool found = mysql_fetch_row(result) != nullptr;
+    mysql_free_result(result);
+    return found;
+}
+
+bool Database::set_hide_kick_through_class(
+    std::string_view username,
+    std::int16_t hidden_through_class) {
+    if (!is_valid_user_class(hidden_through_class)) {
+        throw std::invalid_argument("invalid kick-message class");
+    }
+    std::lock_guard lock(mutex_);
+    const auto username_sql = escape_locked(username);
+    execute_locked(
+        "UPDATE accounts SET hide_kick_through_class=" +
+        std::to_string(hidden_through_class) + " WHERE nick='" +
+        username_sql + "'");
+    if (mysql_affected_rows(connection_) == 1) return true;
+    execute_locked(
+        "SELECT 1 FROM accounts WHERE nick='" + username_sql + "' LIMIT 1");
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) throw std::runtime_error(
+        "MariaDB result failed: " + std::string(mysql_error(connection_)));
+    const bool found = mysql_fetch_row(result) != nullptr;
+    mysql_free_result(result);
+    return found;
+}
+
 bool Database::set_hide_from_class(
     std::string_view username,
     std::int16_t minimum_visible_class) {
@@ -806,7 +1023,9 @@ RuntimeUserPolicy Database::runtime_policy(std::string_view username) {
     const auto username_sql = escape_locked(username);
     execute_locked(
         "SELECT id,user_class,enabled,kick_protect_class,hide_share,"
-        "hide_operator_key,hide_from_class FROM accounts WHERE nick='" +
+        "hide_operator_key,hide_from_class,COALESCE(auth_ip,''),"
+        "password_change_required,hide_kick,hide_kick_through_class "
+        "FROM accounts WHERE nick='" +
         username_sql + "' LIMIT 1");
     MYSQL_RES* result = mysql_store_result(connection_);
     if (result == nullptr) {
@@ -823,11 +1042,13 @@ RuntimeUserPolicy Database::runtime_policy(std::string_view username) {
     int class_value = 0;
     int protect_class = -2;
     int hide_from_class = -1;
+    int hide_kick_through_class = -2;
     try {
         account_id = static_cast<std::uint64_t>(std::stoull(row[0]));
         class_value = std::stoi(row[1]);
         protect_class = std::stoi(row[3]);
         hide_from_class = std::stoi(row[6]);
+        hide_kick_through_class = std::stoi(row[10]);
     } catch (...) {
         mysql_free_result(result);
         throw std::runtime_error("invalid runtime policy stored in database");
@@ -840,7 +1061,9 @@ RuntimeUserPolicy Database::runtime_policy(std::string_view username) {
         protect_class < std::numeric_limits<std::int16_t>::min() ||
         protect_class > std::numeric_limits<std::int16_t>::max() ||
         hide_from_class < std::numeric_limits<std::int16_t>::min() ||
-        hide_from_class > std::numeric_limits<std::int16_t>::max()) {
+        hide_from_class > std::numeric_limits<std::int16_t>::max() ||
+        hide_kick_through_class < std::numeric_limits<std::int16_t>::min() ||
+        hide_kick_through_class > std::numeric_limits<std::int16_t>::max()) {
         mysql_free_result(result);
         throw std::runtime_error("unsupported runtime user class");
     }
@@ -854,6 +1077,12 @@ RuntimeUserPolicy Database::runtime_policy(std::string_view username) {
     policy.hide_operator_key =
         row[5] != nullptr && std::string_view(row[5]) == "1";
     policy.hide_from_class = static_cast<std::int16_t>(hide_from_class);
+    policy.auth_ip = row[7] == nullptr ? std::string{} : std::string(row[7]);
+    policy.password_change_required =
+        row[8] != nullptr && std::string_view(row[8]) == "1";
+    policy.hide_kick = row[9] != nullptr && std::string_view(row[9]) == "1";
+    policy.hide_kick_through_class =
+        static_cast<std::int16_t>(hide_kick_through_class);
     mysql_free_result(result);
 
     execute_locked(
@@ -879,6 +1108,105 @@ RuntimeUserPolicy Database::runtime_policy(std::string_view username) {
     }
     mysql_free_result(result);
     return policy;
+}
+
+HubSettings Database::hub_settings() {
+    std::lock_guard lock(mutex_);
+    execute_locked(
+        "SELECT setting_key,setting_value FROM settings "
+        "WHERE setting_key LIKE 'key.class.%' "
+        "OR setting_key LIKE 'key.nick.%' "
+        "OR setting_key LIKE 'key.user.autoreg.%' "
+        "OR setting_key='key.user.password.minimum.length' "
+        "OR setting_key='key.user.password.initial.timeout' "
+        "ORDER BY setting_key");
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) throw std::runtime_error(
+        "MariaDB result failed: " + std::string(mysql_error(connection_)));
+
+    HubSettings settings;
+    while (MYSQL_ROW row = mysql_fetch_row(result)) {
+        if (row[0] == nullptr || row[1] == nullptr) continue;
+        std::string error;
+        const auto normalized = normalize_hub_setting(row[0], row[1], error);
+        if (!normalized.has_value() ||
+            !apply_hub_setting(settings, row[0], *normalized)) {
+            const std::string invalid_key(row[0]);
+            mysql_free_result(result);
+            throw std::runtime_error(
+                "invalid hub setting stored for " + invalid_key);
+        }
+    }
+    mysql_free_result(result);
+    if (settings.nick_length_minimum > settings.nick_length_maximum) {
+        throw std::runtime_error(
+            "nickname minimum length exceeds maximum length");
+    }
+    return settings;
+}
+
+bool Database::set_hub_setting(std::string_view key,
+                               std::string_view value) {
+    std::string error;
+    const auto normalized = normalize_hub_setting(key, value, error);
+    if (!normalized.has_value()) return false;
+    const std::string canonical_key =
+        key == "key.account.password.setup.timeout"
+            ? "key.user.password.initial.timeout"
+            : std::string(key);
+    std::lock_guard lock(mutex_);
+    const auto key_sql = escape_locked(canonical_key);
+    const auto value_sql = escape_locked(*normalized);
+    if (canonical_key == "key.nick.length.minimum" ||
+        canonical_key == "key.nick.length.maximum") {
+        const std::string other_key =
+            canonical_key == "key.nick.length.minimum"
+                ? "key.nick.length.maximum"
+                : "key.nick.length.minimum";
+        execute_locked(
+            "SELECT setting_value FROM settings WHERE setting_key='" +
+            other_key + "' LIMIT 1");
+        MYSQL_RES* result = mysql_store_result(connection_);
+        if (result == nullptr) throw std::runtime_error(
+            "MariaDB result failed: " + std::string(mysql_error(connection_)));
+        const MYSQL_ROW row = mysql_fetch_row(result);
+        if (row != nullptr && row[0] != nullptr) {
+            const auto candidate = static_cast<unsigned long>(
+                std::stoul(*normalized));
+            const auto other = static_cast<unsigned long>(std::stoul(row[0]));
+            const bool invalid =
+                canonical_key == "key.nick.length.minimum"
+                    ? candidate > other
+                    : candidate < other;
+            mysql_free_result(result);
+            if (invalid) return false;
+        } else {
+            mysql_free_result(result);
+        }
+    }
+    execute_locked(
+        "INSERT INTO settings(setting_key,setting_value) VALUES('" + key_sql +
+        "','" + value_sql + "') ON DUPLICATE KEY UPDATE "
+        "setting_value=VALUES(setting_value)");
+    return true;
+}
+
+void Database::record_account_login(std::string_view username,
+                                    std::string_view remote_address) {
+    std::lock_guard lock(mutex_);
+    const auto username_sql = escape_locked(username);
+    const auto address_sql = escape_locked(remote_address);
+    execute_locked(
+        "UPDATE accounts SET last_login_at=UTC_TIMESTAMP(),login_count=login_count+1,"
+        "last_login_ip='" + address_sql + "' WHERE nick='" + username_sql + "'");
+}
+
+void Database::record_account_logout(std::string_view username) {
+    std::lock_guard lock(mutex_);
+    const auto username_sql = escape_locked(username);
+    execute_locked(
+        "UPDATE accounts SET last_logout_at=UTC_TIMESTAMP() WHERE nick='" +
+        username_sql + "'");
 }
 
 std::optional<UserClass> Database::user_class_for_username(
