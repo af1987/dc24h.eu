@@ -1,6 +1,11 @@
 /*
     server.hpp
 
+    v0.0.07:
+        - enforce hub settings, auto-registration and account IP binding
+        - enforce initial-password deadlines and account telemetry
+        - filter kick notifications with per-account visibility policy
+
     v0.0.06:
         - enforce expiring chat, PM, search and download restrictions
         - add protected kick and non-punitive disconnect actions
@@ -69,6 +74,7 @@ private:
         std::map<std::string, std::string> inf_fields;
         std::unordered_set<std::string> features;
         RuntimeUserPolicy policy;
+        std::int64_t password_deadline{0};
     };
 
     int create_listener() const;

@@ -1,6 +1,9 @@
 <!--
 changelog.md
 
+v0.0.07:
+  - add class/nickname policy, auto-registration and account security release
+
 v0.0.06:
   - add moderation enforcement, timed privileges and ncdc interoperability
 
@@ -24,6 +27,40 @@ Date: 2026-08-21
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.07 — 2026-08-21
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- Twenty-eight validated MariaDB-backed class, nickname, auto-registration and password settings.
+- Paired `hub_settings.cpp` / `hub_settings.hpp` policy module.
+- `+regme <password>` with configured class, prefix, share and password checks.
+- Initial-password deadlines for passwordless accounts.
+- Account authentication IPv4, email, public note and kick-message visibility controls.
+- Login/logout timestamps, login count, last-login IPv4 and registering-actor metadata.
+- ADR-0011 and the v0.0.07 release manifest.
+
+### Changed
+
+- Raised canonical release metadata and systemd description to `0.0.07`.
+- Extended private user information with registration, login and security metadata.
+- Enforced nickname policy and optional account IP binding during ADC identification.
+- Enforced configured registration/kick differences and PM/download class reach.
+
+### Validation
+
+- Release build and assertion-enabled CTest suites.
+- Isolated MariaDB schema/migration validation.
+- Real `ncdc 1.23.1` ADC/TIGR connection, public-message echo, Master bootstrap,
+  policy/profile updates and prefixed `+regme` telemetry validation.
+
+### Security
+
+- Protected `!set` remains loopback-only until ADC VERIFY is available.
+- Self-registration is disabled by default and never assigns a class above Operator (3).
+- Password material is intercepted before broadcast and stored only as PBKDF2-HMAC-SHA256.
 
 ## dc24h.eu-v0.0.06 — 2026-08-21
 

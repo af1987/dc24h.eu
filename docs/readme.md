@@ -1,6 +1,10 @@
 <!--
 readme.md
 
+v0.0.07:
+  - index the class/nickname policy and auto-registration release
+  - point operations to ADR-0011 and the v0.0.07 manifest
+
 v0.0.06:
   - index moderation/timed-policy release documentation and ADR-0010
   - record ncdc interoperability validation
@@ -29,7 +33,7 @@ Date: 2026-08-21
 
 # dc24h.eu documentation
 
-This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.06`.
+This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.07`.
 
 ## Documents
 
@@ -37,7 +41,8 @@ This directory is the authoritative design and operations documentation for `dc2
 - `instructions.md` — permanent engineering, versioning, ADR, password-security and C++ pair rules.
 - `changelog.md` — release history.
 - `install.md` — Debian 13 installation, tests, systemd and first-Master bootstrap.
-- `dc24h.eu-v0.0.06.md` — current release manifest and full moderation-key table.
+- `dc24h.eu-v0.0.07.md` — current release manifest and full policy/account-key table.
+- `dc24h.eu-v0.0.06.md` — previous moderation and interoperability manifest.
 - `dc24h.eu-v0.0.05.md` — previous release manifest.
 - `dc24h.eu-v0.0.04.md` — earlier release manifest.
 - `dc24h.eu-v0.0.03.md` — earlier release manifest.
@@ -69,4 +74,4 @@ Supported protected commands:
 - `!set key.user.change.id.password=[id.password]` — replaces the password.
 - `!set key.user.info.userlist.class=[class]` — returns registered users and enabled/password state; `[]` defaults to class 0.
 
-v0.0.06 adds persistent protection/visibility/notes, UTC-expiring restrictions and delegated privileges, protected kick, non-punitive disconnect and private OPChat. The complete key and default-duration table is in `dc24h.eu-v0.0.06.md`; architectural decisions are in ADR-0010. ADC connectivity is validated with `ncdc 1.23.1`.
+v0.0.07 adds persistent class thresholds, nickname admission rules, controlled self-registration, password setup deadlines, authentication IP and account metadata/telemetry. The complete key table is in `dc24h.eu-v0.0.07.md`; architectural decisions are in ADR-0011. ADC connectivity is validated with `ncdc`.

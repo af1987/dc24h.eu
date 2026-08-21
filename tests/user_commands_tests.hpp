@@ -1,6 +1,9 @@
 /*
     user_commands_tests.hpp
 
+    v0.0.07:
+        - declare hub-policy and account-security parser regression tests
+
     v0.0.06:
         - declare complete moderation-key parser regression tests
 

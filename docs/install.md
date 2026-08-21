@@ -1,6 +1,10 @@
 <!--
 install.md
 
+v0.0.07:
+  - install v0.0.07 policy schema and branch
+  - document auto-registration and ncdc validation
+
 v0.0.06:
   - update branch and migration instructions for moderation policies
   - document duration keys, OPChat and ncdc connection validation
@@ -42,15 +46,15 @@ The build requires a C++20 compiler, CMake, pkg-config, MariaDB Connector/C deve
 ```bash
 git clone https://github.com/af1987/dc24h.eu.git
 cd dc24h.eu
-git checkout agent/dc24h-v0.0.06
+git checkout agent/dc24h-v0.0.07
 sudo DC24H_DB_PASSWORD='replace-with-a-strong-password' ./scripts/install.sh
 ```
 
 The installer builds the daemon, applies `sql/schema.sql`, runs CTest, installs the systemd unit and starts `dc24h.service`.
 
-## Database migration for v0.0.06
+## Database migration for v0.0.07
 
-The installer applies `sql/schema.sql`. v0.0.06 adds moderation columns and the expiring policy table while retaining nullable passwords:
+The installer applies `sql/schema.sql`. v0.0.07 adds hub settings, account binding/profile fields, password setup state and login telemetry while retaining all earlier idempotent migrations:
 
 ```sql
 ALTER TABLE accounts
@@ -63,6 +67,19 @@ ALTER TABLE accounts
     ADD COLUMN IF NOT EXISTS hide_from_class SMALLINT NOT NULL DEFAULT -1,
     ADD COLUMN IF NOT EXISTS account_note TEXT NULL;
 
+ALTER TABLE accounts
+    ADD COLUMN IF NOT EXISTS registered_by VARCHAR(64) NULL,
+    ADD COLUMN IF NOT EXISTS password_change_required BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMP NULL,
+    ADD COLUMN IF NOT EXISTS last_logout_at TIMESTAMP NULL,
+    ADD COLUMN IF NOT EXISTS login_count BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS last_login_ip VARCHAR(45) NULL,
+    ADD COLUMN IF NOT EXISTS auth_ip VARCHAR(45) NULL,
+    ADD COLUMN IF NOT EXISTS email VARCHAR(254) NULL,
+    ADD COLUMN IF NOT EXISTS public_note TEXT NULL,
+    ADD COLUMN IF NOT EXISTS hide_kick BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS hide_kick_through_class SMALLINT NOT NULL DEFAULT -2;
+
 CREATE TABLE IF NOT EXISTS user_timed_policies (
     account_id BIGINT UNSIGNED NOT NULL,
     policy_key VARCHAR(32) NOT NULL,
@@ -70,6 +87,13 @@ CREATE TABLE IF NOT EXISTS user_timed_policies (
     PRIMARY KEY (account_id, policy_key),
     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
 );
+
+-- The complete idempotent seed list contains 28 validated rows.
+INSERT IGNORE INTO settings(setting_key, setting_value) VALUES
+    ('key.class.permission.register.difference', '2'),
+    ('key.nick.length.minimum', '3'),
+    ('key.user.autoreg.class', '-1'),
+    ('key.user.password.initial.timeout', '300');
 ```
 
 Both the application schema bootstrap and `sql/schema.sql` apply this shape. Existing non-NULL password hashes are preserved.
@@ -154,7 +178,7 @@ Set `dns_lookup=1` in `/etc/dc24h.eu/dc24h.conf` only if reverse DNS is desired,
 !opchat private operator message
 ```
 
-All restriction and privilege keys are listed with defaults in `docs/dc24h.eu-v0.0.06.md`. Explicit durations use `m`, `h` or `d` and range from `1m` to `365d`.
+All current policy, restriction and privilege keys are listed with defaults in `docs/dc24h.eu-v0.0.07.md`. Explicit moderation durations use `m`, `h` or `d` and range from `1m` to `365d`.
 
 Passwords may contain dots; the parser consumes only the required leading separators.
 
@@ -190,10 +214,10 @@ In `ncdc`:
 
 ```text
 /open dc24h adc://127.0.0.1:1511/
-/say ncdc-v0.0.06-connection-test
+/say ncdc-v0.0.07-connection-test
 ```
 
-A successful test shows the hub description, the connected nickname/user count and the echoed chat line. v0.0.06 was validated with `ncdc 1.23.1`. BASE/TIGR are negotiated in SUP; TIGR PID/CID validation remains active.
+A successful test shows the hub description, the connected nickname/user count and the echoed chat line. v0.0.07 is validated with Debian `ncdc`. BASE/TIGR are negotiated in SUP; TIGR PID/CID validation remains active.
 
 ## MariaDB
 
@@ -201,7 +225,7 @@ The application uses database `dc24h`, MariaDB Connector/C and `utf8mb4`. `accou
 
 ## Network
 
-The default ADC listener is TCP port `1511`. v0.0.06 remains IPv4-only. Administrative and self-service paths remain restricted to `127.0.0.1` until ADC VERIFY is implemented.
+The default ADC listener is TCP port `1511`. v0.0.07 remains IPv4-only. Administrative `!set` paths remain restricted to `127.0.0.1`; `+passwd` and explicitly enabled `+regme` are self-service exceptions.
 
 ## systemd
 

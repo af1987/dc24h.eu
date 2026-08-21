@@ -3,6 +3,10 @@
 
     - hub-local user management command model
 
+        v0.0.07:
+            - add hub-setting and self-registration actions
+            - add account IP, email, public-note and kick-message actions
+
         v0.0.06:
             - add moderation, visibility and account-note actions
             - add generic expiring restriction and delegated-privilege actions
@@ -69,7 +73,15 @@ enum class UserSetAction {
     set_user_note,
     set_self_visibility,
     set_timed_policy,
-    remove_timed_policy
+    remove_timed_policy,
+    set_hub_setting,
+    self_register,
+    set_auth_ip,
+    remove_auth_ip,
+    set_email,
+    set_public_note,
+    set_hide_kick,
+    set_hide_kick_class
 };
 
 struct UserSetCommand {
@@ -81,6 +93,9 @@ struct UserSetCommand {
     std::string query;
     std::string policy_key;
     std::string note;
+    std::string setting_key;
+    std::string setting_value;
+    std::string actor_username;
     std::uint64_t duration_seconds{0};
     bool enabled{false};
 };

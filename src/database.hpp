@@ -3,6 +3,11 @@
 
     - MariaDB persistence API
 
+        v0.0.07:
+            - persist hub class, nickname and auto-registration settings
+            - add account IP, email, public-note and kick-message controls
+            - add password-setup state and login/logout telemetry
+
         v0.0.06:
             - add persistent moderation attributes and account notes
             - add expiring restrictions and delegated privileges
@@ -36,6 +41,7 @@
 #pragma once
 
 #include "config.hpp"
+#include "hub_settings.hpp"
 #include "user.hpp"
 
 #include <mysql.h>
@@ -82,6 +88,17 @@ struct UserDetails {
     bool hide_operator_key{false};
     std::int16_t hide_from_class{-1};
     std::string note;
+    std::string registered_by;
+    bool password_change_required{false};
+    std::string last_login_at;
+    std::string last_logout_at;
+    std::uint64_t login_count{0};
+    std::string last_login_ip;
+    std::string auth_ip;
+    std::string email;
+    std::string public_note;
+    bool hide_kick{false};
+    std::int16_t hide_kick_through_class{-2};
 };
 
 struct TimedPolicyEntry {
@@ -97,6 +114,10 @@ struct RuntimeUserPolicy {
     bool hide_share{false};
     bool hide_operator_key{false};
     std::int16_t hide_from_class{-1};
+    std::string auth_ip;
+    bool password_change_required{false};
+    bool hide_kick{false};
+    std::int16_t hide_kick_through_class{-2};
     std::vector<TimedPolicyEntry> timed_policies;
 };
 
@@ -116,9 +137,11 @@ public:
 
     std::uint64_t create_user(std::string_view username,
                               UserClass user_class,
-                              std::string_view password_hash);
+                              std::string_view password_hash,
+                              std::string_view registered_by = {});
     std::uint64_t create_user_without_password(std::string_view username,
-                                               UserClass user_class);
+                                               UserClass user_class,
+                                               std::string_view registered_by = {});
     bool update_user_password_by_id(std::uint64_t user_id,
                                     std::string_view password_hash);
     bool update_user_password_by_username(
@@ -142,6 +165,13 @@ public:
     bool set_hide_share(std::string_view username, bool hidden);
     bool set_hide_operator_key(std::string_view username, bool hidden);
     bool set_user_note(std::string_view username, std::string_view note);
+    bool set_user_auth_ip(std::string_view username,
+                          const std::optional<std::string>& address);
+    bool set_user_email(std::string_view username, std::string_view email);
+    bool set_user_public_note(std::string_view username, std::string_view note);
+    bool set_hide_kick(std::string_view username, bool hidden);
+    bool set_hide_kick_through_class(std::string_view username,
+                                     std::int16_t hidden_through_class);
     bool set_hide_from_class(std::string_view username,
                              std::int16_t minimum_visible_class);
     bool set_timed_policy(std::string_view username,
@@ -150,6 +180,11 @@ public:
     bool remove_timed_policy(std::string_view username,
                              std::string_view policy_key);
     RuntimeUserPolicy runtime_policy(std::string_view username);
+    HubSettings hub_settings();
+    bool set_hub_setting(std::string_view key, std::string_view value);
+    void record_account_login(std::string_view username,
+                              std::string_view remote_address);
+    void record_account_logout(std::string_view username);
     std::optional<UserClass> user_class_for_username(
         std::string_view username);
     bool has_any_enabled_users();
