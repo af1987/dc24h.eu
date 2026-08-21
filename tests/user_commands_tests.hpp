@@ -1,6 +1,9 @@
 /*
     user_commands_tests.hpp
 
+    v0.0.06:
+        - declare complete moderation-key parser regression tests
+
     v0.0.05:
         - declare complete v0.0.05 user-key parser regression tests
 
@@ -8,7 +11,7 @@
         - declare focused user class, !set parser and password hashing tests
 
     Author: gpt-5.6-sol
-    Date: 2026-08-20
+    Date: 2026-08-21
 */
 
 #pragma once

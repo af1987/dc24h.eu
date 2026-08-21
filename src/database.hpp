@@ -3,6 +3,11 @@
 
     - MariaDB persistence API
 
+        v0.0.06:
+            - add persistent moderation attributes and account notes
+            - add expiring restrictions and delegated privileges
+            - expose runtime policy snapshots for ADC routing enforcement
+
         v0.0.05:
             - add complete registered-user administration operations
             - expose account details and password reset state
@@ -23,7 +28,7 @@
             - serialize access to the MariaDB C connection
 
     Author: gpt-5.6-sol
-    Date: 2026-08-20
+    Date: 2026-08-21
 */
 
 // ----------------------------------// DECLARATION //--
@@ -72,6 +77,27 @@ struct UserDetails {
     bool has_password{false};
     std::string created_at;
     std::string updated_at;
+    std::int16_t kick_protect_class{-2};
+    bool hide_share{false};
+    bool hide_operator_key{false};
+    std::int16_t hide_from_class{-1};
+    std::string note;
+};
+
+struct TimedPolicyEntry {
+    std::string policy_key;
+    std::int64_t expires_at{0};
+};
+
+struct RuntimeUserPolicy {
+    bool registered{false};
+    bool enabled{false};
+    UserClass user_class{UserClass::regular};
+    std::int16_t kick_protect_class{-2};
+    bool hide_share{false};
+    bool hide_operator_key{false};
+    std::int16_t hide_from_class{-1};
+    std::vector<TimedPolicyEntry> timed_policies;
 };
 
 class Database {
@@ -111,6 +137,19 @@ public:
                                          bool enabled);
     AccountChangeResult set_user_class(std::string_view username,
                                        UserClass user_class);
+    bool set_kick_protect_class(std::string_view username,
+                                std::int16_t protected_through_class);
+    bool set_hide_share(std::string_view username, bool hidden);
+    bool set_hide_operator_key(std::string_view username, bool hidden);
+    bool set_user_note(std::string_view username, std::string_view note);
+    bool set_hide_from_class(std::string_view username,
+                             std::int16_t minimum_visible_class);
+    bool set_timed_policy(std::string_view username,
+                          std::string_view policy_key,
+                          std::uint64_t duration_seconds);
+    bool remove_timed_policy(std::string_view username,
+                             std::string_view policy_key);
+    RuntimeUserPolicy runtime_policy(std::string_view username);
     std::optional<UserClass> user_class_for_username(
         std::string_view username);
     bool has_any_enabled_users();

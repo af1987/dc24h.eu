@@ -3,6 +3,11 @@
 
     - user command and password helper regression tests
 
+        v0.0.06:
+            - test moderation, visibility, notes and live disconnect/kick keys
+            - test all timed restriction and delegated-privilege defaults
+            - validate explicit duration parsing and invalid flags
+
         v0.0.05:
             - test the complete registered-user administration key set
             - test class-0 default, password reset, +passwd and IP queries
@@ -20,7 +25,7 @@
             - test PBKDF2 password hash verification
 
     Author: gpt-5.6-sol
-    Date: 2026-08-20
+    Date: 2026-08-21
 */
 
 // ----------------------------------// DECLARATION //--
@@ -181,6 +186,91 @@ void run_user_command_tests() {
         "!set key.user.info.userlist.subnet=[10.0.0.0/24]", error);
     assert(by_subnet.has_value());
     assert(by_subnet->action == UserSetAction::find_users_by_subnet);
+
+    const auto disconnect = UserCommandProcessor::parse(
+        "!set key.user.disconnect.username=[alice]", error);
+    assert(disconnect.has_value());
+    assert(disconnect->action == UserSetAction::disconnect_user);
+
+    const auto kick = UserCommandProcessor::parse(
+        "!set key.user.kick.username=[alice]", error);
+    assert(kick.has_value());
+    assert(kick->action == UserSetAction::kick_user);
+
+    const auto protect = UserCommandProcessor::parse(
+        "!set key.user.protect.username.class=[alice.4]", error);
+    assert(protect.has_value());
+    assert(protect->action == UserSetAction::set_kick_protection);
+    assert(protect->user_class == UserClass::cheef);
+
+    const auto hide_share = UserCommandProcessor::parse(
+        "!set key.user.hide.share.username=[alice.1]", error);
+    assert(hide_share.has_value());
+    assert(hide_share->action == UserSetAction::set_hide_share);
+    assert(hide_share->enabled);
+
+    const auto hide_operator = UserCommandProcessor::parse(
+        "!set key.user.hide.operator.username=[alice.0]", error);
+    assert(hide_operator.has_value());
+    assert(hide_operator->action == UserSetAction::set_hide_operator_key);
+    assert(!hide_operator->enabled);
+
+    const auto note = UserCommandProcessor::parse(
+        "!set key.user.note.username=[alice.Trusted local operator]", error);
+    assert(note.has_value());
+    assert(note->action == UserSetAction::set_user_note);
+    assert(note->note == "Trusted local operator");
+
+    const auto self_visibility = UserCommandProcessor::parse(
+        "!set key.user.self.hide.class=[3]", error);
+    assert(self_visibility.has_value());
+    assert(self_visibility->action == UserSetAction::set_self_visibility);
+    assert(self_visibility->user_class == UserClass::operator_user);
+
+    struct TimedCase {
+        const char* command;
+        const char* policy;
+        std::uint64_t default_seconds;
+    };
+    constexpr std::array<TimedCase, 9> timed_cases{{
+        {"!set key.user.restrict.gag.username.time=[alice]", "gag", 604800U},
+        {"!set key.user.restrict.download.username.time=[alice]", "no_download", 172800U},
+        {"!set key.user.restrict.chat.username.time=[alice]", "no_chat", 172800U},
+        {"!set key.user.restrict.pm.username.time=[alice]", "no_pm", 604800U},
+        {"!set key.user.restrict.search.username.time=[alice]", "no_search", 604800U},
+        {"!set key.user.grant.kick.username.time=[alice]", "can_kick", 604800U},
+        {"!set key.user.grant.hideshare.username.time=[alice]", "hide_share", 604800U},
+        {"!set key.user.grant.register.username.time=[alice]", "can_register", 604800U},
+        {"!set key.user.grant.opchat.username.time=[alice]", "opchat", 604800U}
+    }};
+    for (const auto& test : timed_cases) {
+        const auto parsed = UserCommandProcessor::parse(test.command, error);
+        assert(parsed.has_value());
+        assert(parsed->action == UserSetAction::set_timed_policy);
+        assert(parsed->policy_key == test.policy);
+        assert(parsed->duration_seconds == test.default_seconds);
+    }
+
+    const auto explicit_duration = UserCommandProcessor::parse(
+        "!set key.user.restrict.gag.username.time=[alice.12h]", error);
+    assert(explicit_duration.has_value());
+    assert(explicit_duration->duration_seconds == 43200U);
+
+    const auto remove_gag = UserCommandProcessor::parse(
+        "!set key.user.restrict.gag.remove.username=[alice]", error);
+    assert(remove_gag.has_value());
+    assert(remove_gag->action == UserSetAction::remove_timed_policy);
+    assert(remove_gag->policy_key == "gag");
+
+    const auto invalid_flag = UserCommandProcessor::parse(
+        "!set key.user.hide.share.username=[alice.2]", error);
+    assert(!invalid_flag.has_value());
+    assert(error == "flag must be 0 or 1");
+
+    const auto invalid_duration = UserCommandProcessor::parse(
+        "!set key.user.restrict.gag.username.time=[alice.0d]", error);
+    assert(!invalid_duration.has_value());
+    assert(error == "duration must be 1m..365d using m, h or d");
 
     const auto invalid_class =
         UserCommandProcessor::parse(

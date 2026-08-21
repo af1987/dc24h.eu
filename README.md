@@ -1,6 +1,10 @@
 <!--
 README.md
 
+v0.0.06:
+  - raise project description to dc24h.eu-v0.0.06
+  - add moderation enforcement, timed privileges and ncdc compatibility
+
 v0.0.05:
   - raise project description to dc24h.eu-v0.0.05
   - add complete user administration and online lookup keys
@@ -22,12 +26,12 @@ v0.0.01:
   - initial ADC/C++/MariaDB/Debian 13/systemd project overview
 
 Author: gpt-5.6-sol
-Date: 2026-08-20
+Date: 2026-08-21
 -->
 
 # dc24h.eu
 
-`dc24h.eu-v0.0.05` is a C++20 Direct Connect ADC hub for Debian 13.
+`dc24h.eu-v0.0.06` is a C++20 Direct Connect ADC hub for Debian 13.
 
 ## Baseline
 
@@ -43,7 +47,7 @@ Date: 2026-08-20
 - Default ADC TCP port: 1511
 - Reverse DNS: disabled by default (`dns_lookup=0`)
 - Author: `gpt-5.6-sol`
-- Release date: `2026-08-20`
+- Release date: `2026-08-21`
 
 ## User management keys
 
@@ -60,7 +64,7 @@ Commands are sent through the existing protected hub-local `!set` command path a
 - Show all registered users in a class, including enabled state, in the private response:
   `!set key.user.info.userlist.class=[class]`
 
-The v0.0.05 command set also provides password replacement/reset by nickname, `+passwd` first-password self-service, removal, disable/enable, permanent and restart-scoped class changes, registered-account details, and online IP/hostname/range/subnet queries. See `docs/dc24h.eu-v0.0.05.md` for the complete command table.
+The v0.0.06 command set additionally provides protected kick, non-punitive disconnect, persistent visibility/notes, timed chat/PM/search/download restrictions and delegated kick/register/share/OPChat privileges. See `docs/dc24h.eu-v0.0.06.md` for every key and default duration.
 
 `key.user.new.id.password` is not an alias for password change. If a password already exists, no database change is made. `key.user.change.username.password=[username.]` resets a password to `NULL`, after which the current local nickname may set it once with `+passwd <password>`.
 
@@ -79,6 +83,8 @@ The v0.0.05 command set also provides password replacement/reset by nickname, `+
 
 Passwords are persisted only as salted PBKDF2-HMAC-SHA256 hashes. Passwordless registrations store `NULL` in `accounts.password_hash` until `key.user.new.id.password` assigns the first password.
 
-The management trust boundary remains loopback-only (`127.0.0.1`) and requires effective Admin (5) or Master (10) after first-Master bootstrap because ADC VERIFY (`GPA`/`PAS`) is not implemented. The final enabled Master cannot be removed, disabled or demoted. Temporary classes are capped at Admin and disappear on restart.
+The management trust boundary remains loopback-only (`127.0.0.1`) because ADC VERIFY (`GPA`/`PAS`) is not implemented. Timed policies persist in MariaDB with UTC expiry and are enforced before ADC routing. Delegated registration is capped at class 1.
 
-See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`, `docs/dc24h.eu-v0.0.05.md` and `docs/adr/0009-complete-user-administration.md`.
+ADC/TIGR connectivity is validated with Debian 13 `ncdc 1.23.1`.
+
+See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`, `docs/dc24h.eu-v0.0.06.md` and `docs/adr/0010-moderation-policies-ncdc-compatibility.md`.

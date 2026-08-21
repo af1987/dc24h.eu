@@ -1,5 +1,9 @@
 -- schema.sql
 --
+-- v0.0.06:
+--   - add persistent moderation and visibility attributes to accounts
+--   - add expiring restrictions and delegated privileges table
+--
 -- v0.0.05:
 --   - add account updated_at metadata for complete user information
 --   - support complete registered-user lifecycle administration
@@ -19,7 +23,7 @@
 --   - add accounts, settings and connection event tables
 --
 -- Author: gpt-5.6-sol
--- Date: 2026-08-20
+-- Date: 2026-08-21
 
 CREATE DATABASE IF NOT EXISTS dc24h
     CHARACTER SET utf8mb4
@@ -47,6 +51,11 @@ CREATE TABLE IF NOT EXISTS accounts (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
         ON UPDATE CURRENT_TIMESTAMP,
+    kick_protect_class SMALLINT NOT NULL DEFAULT -2,
+    hide_share BOOLEAN NOT NULL DEFAULT FALSE,
+    hide_operator_key BOOLEAN NOT NULL DEFAULT FALSE,
+    hide_from_class SMALLINT NOT NULL DEFAULT -1,
+    account_note TEXT NULL,
     INDEX idx_accounts_user_class (user_class),
     CONSTRAINT chk_accounts_user_class
         CHECK (user_class IN (-1, 0, 1, 2, 3, 4, 5, 10))
@@ -61,6 +70,26 @@ ALTER TABLE accounts
 ALTER TABLE accounts
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP NOT NULL
         DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP;
+
+ALTER TABLE accounts
+    ADD COLUMN IF NOT EXISTS kick_protect_class SMALLINT NOT NULL DEFAULT -2,
+    ADD COLUMN IF NOT EXISTS hide_share BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS hide_operator_key BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS hide_from_class SMALLINT NOT NULL DEFAULT -1,
+    ADD COLUMN IF NOT EXISTS account_note TEXT NULL;
+
+CREATE TABLE IF NOT EXISTS user_timed_policies (
+    account_id BIGINT UNSIGNED NOT NULL,
+    policy_key VARCHAR(32) NOT NULL,
+    expires_at TIMESTAMP(6) NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+        ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (account_id, policy_key),
+    INDEX idx_user_timed_policies_expiry (expires_at),
+    CONSTRAINT fk_user_timed_policies_account
+        FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS settings (
     setting_key VARCHAR(128) NOT NULL PRIMARY KEY,

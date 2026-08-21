@@ -1,6 +1,11 @@
 /*
     server.hpp
 
+    v0.0.06:
+        - enforce expiring chat, PM, search and download restrictions
+        - add protected kick and non-punitive disconnect actions
+        - filter INF visibility, share and operator flags by account policy
+
     v0.0.05:
         - add private online-user IP, hostname, range and subnet queries
         - retain temporary class overrides in memory until restart
@@ -22,7 +27,7 @@
         - add graceful shutdown contract for systemd SIGTERM
 
     Author: gpt-5.6-sol
-    Date: 2026-08-20
+    Date: 2026-08-21
 */
 
 #pragma once
@@ -63,6 +68,7 @@ private:
         bool normal{false};
         std::map<std::string, std::string> inf_fields;
         std::unordered_set<std::string> features;
+        RuntimeUserPolicy policy;
     };
 
     int create_listener() const;
@@ -76,7 +82,12 @@ private:
         const std::vector<std::pair<std::string, std::string>>& fields);
     void route_action(int sender_fd, const AdcAction& action);
     bool handle_user_set_command(int sender_fd, const AdcAction& action);
-    UserSetResult execute_live_user_command(const UserSetCommand& command);
+    bool handle_opchat_command(int sender_fd, const AdcAction& action);
+    UserSetResult execute_live_user_command(int sender_fd,
+                                            const UserSetCommand& command);
+    bool enforce_sender_policy(int sender_fd, const AdcAction& action);
+    void refresh_client_policy(std::string_view username);
+    void expire_client_policies();
     std::optional<UserClass> temporary_class_for(
         std::string_view username) const;
     std::string hostname_for_address(std::string_view address) const;
@@ -86,15 +97,24 @@ private:
         std::string_view value);
 
     void broadcast(const std::string& message);
+    void broadcast_from(int sender_fd, const std::string& message);
+    void broadcast_current_inf(int sender_fd, bool remove_hidden = false);
     void route_direct(int sender_fd,
                       std::string_view target_sid,
                       const std::string& message,
                       bool echo_sender);
-    void route_feature(const AdcAction& action);
+    void route_feature(int sender_fd, const AdcAction& action);
     void disconnect_all();
     void join_workers();
 
-    std::string build_current_inf_locked(const ClientInfo& client) const;
+    std::string build_current_inf_locked(
+        const ClientInfo& client,
+        UserClass recipient_class,
+        bool recipient_is_self = false) const;
+    static bool has_active_policy(const ClientInfo& client,
+                                  std::string_view policy_key) noexcept;
+    static std::optional<std::string> client_username(
+        const ClientInfo& client);
     static std::unordered_set<std::string> parse_feature_list(
         const std::string& value);
     static bool feature_match(

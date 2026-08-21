@@ -1,6 +1,10 @@
 /*
     adc.cpp
 
+    v0.0.06:
+        - accept ncdc identification without duplicating BASE/TIGR in BINF SU
+        - keep BASE/TIGR negotiation authoritative in the protocol-state SUP
+
     v0.0.02:
         - implement ADC 1.0.4 PROTOCOL -> IDENTIFY -> NORMAL state validation
         - negotiate BASE plus TIGR and reject sessions without a hash overlap
@@ -17,7 +21,7 @@
         - support BQUI disconnect requests
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-21
 */
 
 #include "adc.hpp"
@@ -101,22 +105,6 @@ std::string status(std::string_view code,
     }
     message.push_back('\n');
     return message;
-}
-
-bool contains_feature(std::string_view comma_list, std::string_view feature) {
-    std::size_t start = 0;
-    while (start <= comma_list.size()) {
-        const auto comma = comma_list.find(',', start);
-        const auto end = comma == std::string_view::npos
-                             ? comma_list.size()
-                             : comma;
-        if (comma_list.substr(start, end - start) == feature) {
-            return true;
-        }
-        if (comma == std::string_view::npos) break;
-        start = comma + 1;
-    }
-    return false;
 }
 
 bool supports_feature(const std::vector<std::string>& tokens,
@@ -323,7 +311,6 @@ AdcAction AdcProtocol::handle_line(std::string_view line,
         const auto cid = field_value(fields, "ID");
         const auto pid = field_value(fields, "PD");
         const auto nick = field_value(fields, "NI");
-        const auto supported = field_value(fields, "SU");
 
         if (!cid.has_value()) {
             action.direct_messages.emplace_back(
@@ -340,14 +327,6 @@ AdcAction AdcProtocol::handle_line(std::string_view line,
         if (!nick.has_value() || nick->empty()) {
             action.direct_messages.emplace_back(
                 status("243", "Required\\sINF\\sfield\\smissing", "FMNI"));
-            action.disconnect = true;
-            return action;
-        }
-        if (!supported.has_value() ||
-            !contains_feature(*supported, "BASE") ||
-            !contains_feature(*supported, "TIGR")) {
-            action.direct_messages.emplace_back(
-                status("245", "Required\\sfeature\\smissing", "FCBASE"));
             action.disconnect = true;
             return action;
         }

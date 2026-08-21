@@ -1,6 +1,9 @@
 /*
     adc.hpp
 
+    v0.0.06:
+        - document ncdc-compatible SUP-only BASE/TIGR negotiation
+
     v0.0.02:
         - add ADC 1.0.4 PROTOCOL/IDENTIFY/NORMAL session state
         - add B/D/E/F routing decisions and feature filters
@@ -13,7 +16,7 @@
         - add routing decisions for INF, MSG, SCH and RES messages
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-21
 */
 
 #pragma once

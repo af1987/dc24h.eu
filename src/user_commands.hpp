@@ -3,6 +3,11 @@
 
     - hub-local user management command model
 
+        v0.0.06:
+            - add moderation, visibility and account-note actions
+            - add generic expiring restriction and delegated-privilege actions
+            - add disconnect and protected kick live-session actions
+
         v0.0.05:
             - add complete account lifecycle and information key actions
             - add temporary-class and online IP/hostname query actions
@@ -19,7 +24,7 @@
             - support numeric user classes and account IDs
 
     Author: gpt-5.6-sol
-    Date: 2026-08-20
+    Date: 2026-08-21
 */
 
 // ----------------------------------// DECLARATION //--
@@ -55,7 +60,16 @@ enum class UserSetAction {
     find_users_by_ip,
     find_users_by_ip_range,
     find_users_by_subnet,
-    self_add_password
+    self_add_password,
+    disconnect_user,
+    kick_user,
+    set_kick_protection,
+    set_hide_share,
+    set_hide_operator_key,
+    set_user_note,
+    set_self_visibility,
+    set_timed_policy,
+    remove_timed_policy
 };
 
 struct UserSetCommand {
@@ -65,6 +79,10 @@ struct UserSetCommand {
     std::uint64_t user_id{0};
     std::string password;
     std::string query;
+    std::string policy_key;
+    std::string note;
+    std::uint64_t duration_seconds{0};
+    bool enabled{false};
 };
 
 struct UserSetResult {

@@ -1,6 +1,10 @@
 <!--
 readme.md
 
+v0.0.06:
+  - index moderation/timed-policy release documentation and ADR-0010
+  - record ncdc interoperability validation
+
 v0.0.05:
   - update the index for complete user administration and online queries
   - add release v0.0.05 and ADR-0009 references
@@ -20,21 +24,22 @@ v0.0.01:
   - add documentation index and project baseline
 
 Author: gpt-5.6-sol
-Date: 2026-08-20
+Date: 2026-08-21
 -->
 
 # dc24h.eu documentation
 
-This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.05`.
+This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.06`.
 
 ## Documents
 
-- `architecture.md` — ADC flow, persistence, account lifecycle, temporary classes and online queries.
+- `architecture.md` — ADC flow, persistence, account lifecycle, moderation enforcement and online queries.
 - `instructions.md` — permanent engineering, versioning, ADR, password-security and C++ pair rules.
 - `changelog.md` — release history.
 - `install.md` — Debian 13 installation, tests, systemd and first-Master bootstrap.
-- `dc24h.eu-v0.0.05.md` — current release manifest.
-- `dc24h.eu-v0.0.04.md` — previous release manifest.
+- `dc24h.eu-v0.0.06.md` — current release manifest and full moderation-key table.
+- `dc24h.eu-v0.0.05.md` — previous release manifest.
+- `dc24h.eu-v0.0.04.md` — earlier release manifest.
 - `dc24h.eu-v0.0.03.md` — earlier release manifest.
 - `dc24h.eu-v0.0.02.md` — earlier protocol-hardening release manifest.
 - `dc24h.eu-v0.0.01.md` — initial release manifest.
@@ -50,7 +55,7 @@ This directory is the authoritative design and operations documentation for `dc2
 - Implementation: C++20
 - Database: MariaDB / `utf8mb4`
 - OS/service manager: Debian 13 / systemd
-- Author/date: `gpt-5.6-sol`, `2026-08-20`
+- Author/date: `gpt-5.6-sol`, `2026-08-21`
 
 ## Current account profile
 
@@ -64,4 +69,4 @@ Supported protected commands:
 - `!set key.user.change.id.password=[id.password]` — replaces the password.
 - `!set key.user.info.userlist.class=[class]` — returns registered users and enabled/password state; `[]` defaults to class 0.
 
-v0.0.05 additionally supports remove, disable/enable, permanent/temporary class, account detail, password reset/`+passwd`, and online IP/hostname/range/subnet operations. The complete table is in `dc24h.eu-v0.0.05.md`. Management remains loopback-only and requires effective Admin (5)/Master (10) after bootstrap; see ADR-0009.
+v0.0.06 adds persistent protection/visibility/notes, UTC-expiring restrictions and delegated privileges, protected kick, non-punitive disconnect and private OPChat. The complete key and default-duration table is in `dc24h.eu-v0.0.06.md`; architectural decisions are in ADR-0010. ADC connectivity is validated with `ncdc 1.23.1`.

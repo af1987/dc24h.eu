@@ -1,6 +1,9 @@
 /*
     adc_tests.cpp
 
+    v0.0.06:
+        - verify canonical 0.0.06 runtime release metadata and provenance date
+
     v0.0.05:
         - verify canonical 0.0.05 runtime release metadata
 
@@ -11,7 +14,7 @@
         - verify sender SID spoofing is rejected
 
     Author: gpt-5.6-sol
-    Date: 2026-08-20
+    Date: 2026-08-21
 */
 
 #include "adc_tests.hpp"
@@ -82,15 +85,30 @@ void run_protocol_tests() {
                              session);
     assert(spoof.disconnect);
     assert(!spoof.direct_messages.empty());
+
+    AdcSession ncdc_session;
+    const auto ncdc_handshake = protocol.handle_line(
+        "HSUP ADBASE ADTIGR", "AAAC", "127.0.0.1", ncdc_session);
+    assert(!ncdc_handshake.disconnect);
+    const auto ncdc_identify = protocol.handle_line(
+        "BINF AAAC "
+        "IDW6AIUW3CLDF6OGHNVE4JPDDJ2P74IWRCF2O36TA "
+        "PDAAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFY "
+        "NIncdc I40.0.0.0",
+        "AAAC", "127.0.0.1", ncdc_session);
+    assert(ncdc_identify.became_normal);
+    assert(!ncdc_identify.disconnect);
 }
 
 }  // namespace dc24h::tests
 
 int main() {
-    assert(dc24h::version() == "0.0.05");
-    assert(dc24h::release_name() == "dc24h.eu-v0.0.05");
+    assert(dc24h::version() == "0.0.06");
+    assert(dc24h::release_name() == "dc24h.eu-v0.0.06");
+    assert(dc24h::project_author() == "gpt-5.6-sol");
+    assert(dc24h::project_date() == "2026-08-21");
     dc24h::tests::run_hash_tests();
     dc24h::tests::run_protocol_tests();
-    std::cout << "dc24h.eu v0.0.05 tests passed\n";
+    std::cout << "dc24h.eu v0.0.06 tests passed\n";
     return 0;
 }
