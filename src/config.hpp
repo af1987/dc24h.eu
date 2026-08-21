@@ -1,6 +1,10 @@
 /*
     config.hpp
 
+    v0.0.09:
+        - add a separate MariaDB option-file path to the runtime model
+        - keep legacy inline database keys available for safe migration
+
     v0.0.05:
         - add dns_lookup switch for optional reverse DNS in user queries
 
@@ -9,7 +13,7 @@
         - add UTF-8 configuration loader interface
 
     Author: gpt-5.6-sol
-    Date: 2026-08-20
+    Date: 2026-08-21
 */
 
 #pragma once
@@ -28,6 +32,7 @@ struct Config {
     std::string locale{"en_US.UTF-8"};
     bool dns_lookup{false};
 
+    std::string database_config_path;
     std::string database_host{"127.0.0.1"};
     std::uint16_t database_port{3306};
     std::string database_name{"dc24h"};

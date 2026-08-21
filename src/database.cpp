@@ -3,6 +3,11 @@
 
     - MariaDB persistence implementation
 
+        v0.0.09:
+            - list validated hub settings for the local administration tool
+            - validate complete setting snapshots inside row-locking transactions
+            - preserve cross-setting invariants during concurrent updates
+
         v0.0.08:
             - create and query auditable kick and ban entries
             - add symmetric soft-revocation and indexed admission matching
@@ -125,6 +130,73 @@ constexpr std::string_view moderation_select_columns =
     "COALESCE(revoked_by,''),"
     "COALESCE(revoke_reason,'')";
 
+constexpr std::string_view hub_settings_where =
+    "setting_key IN ('key.kicks','key.bans') "
+    "OR setting_key LIKE 'key.class.%' "
+    "OR setting_key LIKE 'key.nick.%' "
+    "OR setting_key LIKE 'key.user.autoreg.%' "
+    "OR setting_key='key.user.password.minimum.length' "
+    "OR setting_key='key.user.password.initial.timeout'";
+
+constexpr std::size_t canonical_hub_setting_count = 30U;
+
+struct HubSettingsSnapshot {
+    HubSettings settings;
+    std::vector<std::pair<std::string, std::string>> entries;
+};
+
+HubSettingsSnapshot validated_hub_settings(
+    MYSQL_RES* result,
+    std::optional<std::pair<std::string_view, std::string_view>> replacement =
+        std::nullopt) {
+    if (result == nullptr) {
+        throw std::invalid_argument("missing MariaDB settings result");
+    }
+    HubSettingsSnapshot snapshot;
+    bool replaced = false;
+    while (MYSQL_ROW row = mysql_fetch_row(result)) {
+        if (row[0] == nullptr || row[1] == nullptr) continue;
+        const std::string_view key(row[0]);
+        const std::string_view value =
+            replacement.has_value() && replacement->first == key
+                ? (replaced = true, replacement->second)
+                : std::string_view(row[1]);
+        std::string error;
+        const auto normalized = normalize_hub_setting(key, value, error);
+        if (!normalized.has_value() ||
+            !apply_hub_setting(snapshot.settings, key, *normalized)) {
+            throw std::runtime_error(
+                "invalid hub setting stored for " + std::string(key));
+        }
+        snapshot.entries.emplace_back(key, *normalized);
+    }
+    if (replacement.has_value() && !replaced) {
+        if (!apply_hub_setting(snapshot.settings,
+                               replacement->first,
+                               replacement->second)) {
+            throw std::runtime_error("invalid replacement hub setting");
+        }
+        snapshot.entries.emplace_back(
+            replacement->first, replacement->second);
+    }
+    if (snapshot.entries.size() != canonical_hub_setting_count) {
+        throw std::runtime_error(
+            "expected 30 canonical hub settings, found " +
+            std::to_string(snapshot.entries.size()));
+    }
+    if (snapshot.settings.nick_length_minimum >
+        snapshot.settings.nick_length_maximum) {
+        throw std::runtime_error(
+            "nickname minimum length exceeds maximum length");
+    }
+    if (snapshot.settings.kick_rejoin_delay_seconds >
+        snapshot.settings.maximum_temporary_ban_seconds) {
+        throw std::runtime_error(
+            "kick rejoin delay exceeds temporary ban maximum");
+    }
+    return snapshot;
+}
+
 }  // namespace
 
 Database::Database(const Config& config) : config_(config) {}
@@ -148,12 +220,24 @@ void Database::connect() {
     unsigned int timeout_seconds = 5;
     mysql_options(connection_, MYSQL_OPT_CONNECT_TIMEOUT, &timeout_seconds);
 
+    const bool option_file = !config_.database_config_path.empty();
+    if (option_file) {
+        if (mysql_options(connection_,
+                          MYSQL_READ_DEFAULT_FILE,
+                          config_.database_config_path.c_str()) != 0 ||
+            mysql_options(connection_, MYSQL_READ_DEFAULT_GROUP, "client") != 0) {
+            throw std::runtime_error(
+                "Unable to load MariaDB client options from " +
+                config_.database_config_path);
+        }
+    }
+
     if (mysql_real_connect(connection_,
-                           config_.database_host.c_str(),
-                           config_.database_user.c_str(),
-                           config_.database_password.c_str(),
-                           config_.database_name.c_str(),
-                           config_.database_port,
+                           option_file ? nullptr : config_.database_host.c_str(),
+                           option_file ? nullptr : config_.database_user.c_str(),
+                           option_file ? nullptr : config_.database_password.c_str(),
+                           option_file ? nullptr : config_.database_name.c_str(),
+                           option_file ? 0U : config_.database_port,
                            nullptr,
                            0) == nullptr) {
         const std::string error = mysql_error(connection_);
@@ -1209,41 +1293,38 @@ HubSettings Database::hub_settings() {
     std::lock_guard lock(mutex_);
     execute_locked(
         "SELECT setting_key,setting_value FROM settings "
-        "WHERE setting_key IN ('key.kicks','key.bans') "
-        "OR setting_key LIKE 'key.class.%' "
-        "OR setting_key LIKE 'key.nick.%' "
-        "OR setting_key LIKE 'key.user.autoreg.%' "
-        "OR setting_key='key.user.password.minimum.length' "
-        "OR setting_key='key.user.password.initial.timeout' "
-        "ORDER BY setting_key");
+        "WHERE " + std::string(hub_settings_where) + " ORDER BY setting_key");
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) throw std::runtime_error(
+        "MariaDB result failed: " + std::string(mysql_error(connection_)));
+    try {
+        auto snapshot = validated_hub_settings(result);
+        mysql_free_result(result);
+        return snapshot.settings;
+    } catch (...) {
+        mysql_free_result(result);
+        throw;
+    }
+}
+
+std::vector<std::pair<std::string, std::string>>
+Database::hub_setting_entries() {
+    std::lock_guard lock(mutex_);
+    execute_locked(
+        "SELECT setting_key,setting_value FROM settings WHERE " +
+        std::string(hub_settings_where) + " ORDER BY setting_key");
     MYSQL_RES* result = mysql_store_result(connection_);
     if (result == nullptr) throw std::runtime_error(
         "MariaDB result failed: " + std::string(mysql_error(connection_)));
 
-    HubSettings settings;
-    while (MYSQL_ROW row = mysql_fetch_row(result)) {
-        if (row[0] == nullptr || row[1] == nullptr) continue;
-        std::string error;
-        const auto normalized = normalize_hub_setting(row[0], row[1], error);
-        if (!normalized.has_value() ||
-            !apply_hub_setting(settings, row[0], *normalized)) {
-            const std::string invalid_key(row[0]);
-            mysql_free_result(result);
-            throw std::runtime_error(
-                "invalid hub setting stored for " + invalid_key);
-        }
+    try {
+        auto snapshot = validated_hub_settings(result);
+        mysql_free_result(result);
+        return snapshot.entries;
+    } catch (...) {
+        mysql_free_result(result);
+        throw;
     }
-    mysql_free_result(result);
-    if (settings.nick_length_minimum > settings.nick_length_maximum) {
-        throw std::runtime_error(
-            "nickname minimum length exceeds maximum length");
-    }
-    if (settings.kick_rejoin_delay_seconds >
-        settings.maximum_temporary_ban_seconds) {
-        throw std::runtime_error(
-            "kick rejoin delay exceeds temporary ban maximum");
-    }
-    return settings;
 }
 
 bool Database::set_hub_setting(std::string_view key,
@@ -1258,62 +1339,45 @@ bool Database::set_hub_setting(std::string_view key,
     std::lock_guard lock(mutex_);
     const auto key_sql = escape_locked(canonical_key);
     const auto value_sql = escape_locked(*normalized);
-    if (canonical_key == "key.kicks" || canonical_key == "key.bans") {
-        const std::string other_key = canonical_key == "key.kicks"
-            ? "key.bans"
-            : "key.kicks";
+    execute_locked("START TRANSACTION");
+    try {
         execute_locked(
-            "SELECT setting_value FROM settings WHERE setting_key='" +
-            other_key + "' LIMIT 1");
+            "SELECT setting_key,setting_value FROM settings WHERE " +
+            std::string(hub_settings_where) +
+            " ORDER BY setting_key FOR UPDATE");
         MYSQL_RES* result = mysql_store_result(connection_);
         if (result == nullptr) throw std::runtime_error(
             "MariaDB result failed: " + std::string(mysql_error(connection_)));
-        const MYSQL_ROW row = mysql_fetch_row(result);
-        if (row != nullptr && row[0] != nullptr) {
-            const auto candidate = static_cast<std::uint64_t>(
-                std::stoull(*normalized));
-            const auto other = static_cast<std::uint64_t>(std::stoull(row[0]));
-            const bool invalid = canonical_key == "key.kicks"
-                ? candidate > other
-                : candidate < other;
+
+        HubSettings settings;
+        try {
+            settings = validated_hub_settings(
+                result,
+                std::pair<std::string_view, std::string_view>{
+                    canonical_key, *normalized}).settings;
             mysql_free_result(result);
-            if (invalid) return false;
-        } else {
+        } catch (...) {
             mysql_free_result(result);
+            throw;
         }
-    }
-    if (canonical_key == "key.nick.length.minimum" ||
-        canonical_key == "key.nick.length.maximum") {
-        const std::string other_key =
-            canonical_key == "key.nick.length.minimum"
-                ? "key.nick.length.maximum"
-                : "key.nick.length.minimum";
+        if (!apply_hub_setting(settings, canonical_key, *normalized) ||
+            settings.nick_length_minimum > settings.nick_length_maximum ||
+            settings.kick_rejoin_delay_seconds >
+                settings.maximum_temporary_ban_seconds) {
+            execute_locked("ROLLBACK");
+            return false;
+        }
+
         execute_locked(
-            "SELECT setting_value FROM settings WHERE setting_key='" +
-            other_key + "' LIMIT 1");
-        MYSQL_RES* result = mysql_store_result(connection_);
-        if (result == nullptr) throw std::runtime_error(
-            "MariaDB result failed: " + std::string(mysql_error(connection_)));
-        const MYSQL_ROW row = mysql_fetch_row(result);
-        if (row != nullptr && row[0] != nullptr) {
-            const auto candidate = static_cast<unsigned long>(
-                std::stoul(*normalized));
-            const auto other = static_cast<unsigned long>(std::stoul(row[0]));
-            const bool invalid =
-                canonical_key == "key.nick.length.minimum"
-                    ? candidate > other
-                    : candidate < other;
-            mysql_free_result(result);
-            if (invalid) return false;
-        } else {
-            mysql_free_result(result);
-        }
+            "INSERT INTO settings(setting_key,setting_value) VALUES('" + key_sql +
+            "','" + value_sql + "') ON DUPLICATE KEY UPDATE "
+            "setting_value=VALUES(setting_value)");
+        execute_locked("COMMIT");
+        return true;
+    } catch (...) {
+        mysql_query(connection_, "ROLLBACK");
+        throw;
     }
-    execute_locked(
-        "INSERT INTO settings(setting_key,setting_value) VALUES('" + key_sql +
-        "','" + value_sql + "') ON DUPLICATE KEY UPDATE "
-        "setting_value=VALUES(setting_value)");
-    return true;
 }
 
 std::uint64_t Database::add_moderation_entry(

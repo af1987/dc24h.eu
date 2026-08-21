@@ -1,6 +1,12 @@
 <!--
 architecture.md
 
+v0.0.09:
+  - move runtime configuration into the protected per-hub home
+  - split non-secret hub configuration from MariaDB Connector/C options
+  - add transaction-safe local administration for all 30 hub settings
+  - define repeatable credential reuse and atomic installer sequencing
+
 v0.0.08:
   - add persistent kick/ban audit and typed admission targets
   - define pre-NORMAL enforcement, expiry, soft-unban and identity stability
@@ -28,20 +34,27 @@ Author: gpt-5.6-sol
 Date: 2026-08-21
 -->
 
-# Architecture — dc24h.eu-v0.0.08
+# Architecture — dc24h.eu-v0.0.09
 
 ## Baseline
 
 `dc24h.eu` is a C++20 Direct Connect hub for Debian 13. It implements the ADC
 1.0.4 BASE/TIGR profile, validates UTF-8, stores persistent state in MariaDB
-`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.08 adds
-persistent, auditable kick and ban admission policy.
+`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.09
+places the installed instance in a protected per-hub home, separates MariaDB
+credentials from normal runtime settings and adds a local validated settings
+administration path. The v0.0.08 kick and ban admission model is unchanged.
 
 ## Runtime flow
 
-1. systemd starts `/usr/local/bin/dc24h.eu /etc/dc24h.eu/dc24h.conf` after MariaDB.
-2. `main` loads strict `key=value` configuration and selects the US UTF-8 locale.
-3. `Database` connects through MariaDB Connector/C and applies idempotent schema updates.
+1. systemd starts `/usr/local/bin/dc24h.eu /var/lib/dc24h.eu/dc24h.eu/dc24h.conf`
+   after MariaDB, with that protected hub home as `HOME` and working directory.
+2. `main` loads strict `key=value` runtime configuration, resolves the adjacent
+   `database.cnf`, and selects the US UTF-8 locale.
+3. The configuration layer validates exactly one MariaDB `[client]` section,
+   all seven required options, file type and safe permissions. `Database` then
+   asks MariaDB Connector/C to read that option file, connects with `utf8mb4`
+   and applies idempotent schema updates.
 4. `Server` listens on IPv4 TCP port 1511 by default, checks active address
    bans immediately after accept, and allocates a four-character ADC SID.
 5. `AdcProtocol` negotiates BASE/TIGR in SUP, validates UTF-8/escaping, TIGR
@@ -62,12 +75,65 @@ persistent, auditable kick and ban admission policy.
 - `src/hub_settings.cpp` / `src/hub_settings.hpp`: canonical policy keys, normalization and nickname checks.
 - `src/moderation.cpp` / `src/moderation.hpp`: target normalization, duration parsing and admission matching.
 - `src/user_commands.cpp` / `src/user_commands.hpp`: complete key grammar, duration parsing, validation and persistent command execution.
-- `src/database.cpp` / `src/database.hpp`: mutex-serialized MariaDB operations, account invariants and UTC-expiring policies.
+- `src/database.cpp` / `src/database.hpp`: mutex-serialized MariaDB operations,
+  account invariants, UTC-expiring policies and transaction-safe setting snapshots.
 - `src/server.cpp` / `src/server.hpp`: listener, sessions, moderation enforcement, private OPChat, temporary classes, online IPv4 and optional reverse DNS.
-- `src/config.cpp` / `src/config.hpp`: runtime configuration including `dns_lookup=0|1`.
-- `src/version.cpp` / `src/version.hpp`: `0.0.08`, release identity, author and date.
+- `src/config.cpp` / `src/config.hpp`: runtime configuration, split MariaDB
+  option-file validation, relative path resolution and legacy inline migration support.
+- `src/settings_cli.cpp` / `src/settings_cli.hpp`: root-only `list`, `get`, `set`
+  and `check` handling for the canonical 30 settings.
+- `scripts/01-edit-hub-settings.sh`: validates the supplied hub-home boundary
+  and delegates to `/usr/local/bin/dc24h-settings` without parsing credentials.
+- `scripts/install.sh`: creates the hub home, migrates runtime configuration,
+  securely creates or reuses protected MariaDB options, validates the staged
+  deployment and installs/restarts the service.
+- `src/version.cpp` / `src/version.hpp`: `0.0.09`, release identity, author and date.
 
 Every production and test `*.cpp` has a matching `*.hpp` and vice versa.
+
+## Per-hub deployment home
+
+The installed instance has the fixed canonical home
+`/var/lib/dc24h.eu/dc24h.eu`. The base directory is `root:root` mode `0755`;
+the instance home and `scripts/` are `root:dc24h` mode `0750`. `dc24h.conf` and
+`database.cnf` are `root:dc24h` mode `0640`, and the installed wrapper is mode
+`0750`. The `dc24h` account uses the instance path as its account home but has
+`/usr/sbin/nologin`. systemd additionally exposes the home through
+`ReadOnlyPaths`, so the daemon can read but cannot replace its configuration or
+administration script.
+
+The active runtime file contains `database_config=database.cnf` and no inline
+database credentials. A relative reference must be a basename beside
+`dc24h.conf`; parent components and symbolic links are rejected. The option file
+must define `protocol=tcp`, `host`, `port`, `database`, `user`, `password` and
+`default-character-set=utf8mb4` exactly once beneath one `[client]` section.
+Blank lines and option-file comments are allowed. The parser retains the older
+inline `database_*` form only for migration compatibility and rejects mixing it
+with `database_config`.
+
+`01-edit-hub-settings.sh` requires root, an already canonical absolute home and
+one safe direct child name beneath `/var/lib/dc24h.eu`. The compiled
+`dc24h-settings` tool repeats the directory, ownership and mode checks, loads
+the same split configuration and uses the normal `Config` and `Database`
+layers. Neither component invokes a MariaDB command-line client or exposes raw
+SQL.
+
+On a clean installation, the root-only installer reads a new password from a
+hidden prompt or from an absolute, root-owned, mode-`0600`, non-symlink regular
+file selected by `DC24H_DB_PASSWORD_FILE`. The variable contains only a path,
+not the secret. On a reinstall, an existing `database.cnf` is authoritative;
+when migrating the combined legacy configuration, its inline password is
+preserved. The installer rejects a new password file in either case and does
+not silently issue `ALTER USER` or rotate the credential.
+
+After building and passing CTest, the installer updates MariaDB and reapplies
+the schema, atomically replaces both home configuration files, validates them
+with the just-built `dc24h-settings` and canonical home argument, installs the
+tested artifacts, and only then restarts the service. After the service is
+active, the legacy
+`/etc/dc24h.eu/dc24h.conf` path is atomically replaced by a symlink to the
+non-secret home `dc24h.conf`. Privileged project scripts use `/bin/bash` and a
+fixed system `PATH`.
 
 ## Persistent account model
 
@@ -78,7 +144,12 @@ self-registration, password and kick/ban limits. `user_timed_policies` stores
 one UTC expiry per account/policy. `moderation_entries` stores append-oriented
 kick/ban actions, normalized targets, actor/reason, expiry and soft-revocation
 audit. Supported classes remain `-1, 0, 1, 2, 3, 4, 5, 10`; legacy `role` is
-not authoritative.
+not authoritative. The settings administration snapshot requires exactly 30
+canonical rows. A `set` starts a MariaDB transaction, selects the complete
+snapshot using `FOR UPDATE`, normalizes the candidate value, checks nickname
+minimum/maximum and kick/ban invariants, then commits the upsert or rolls back.
+This row locking coordinates the daemon and separate CLI processes rather than
+relying only on an in-process mutex.
 
 Passwords use salted PBKDF2-HMAC-SHA256 with 210000 iterations, a 16-byte random salt and a 32-byte derived key. Plaintext passwords and hashes are never returned in command messages. Password-presence information is reported only as `set`/`unset`.
 
@@ -119,7 +190,12 @@ Account information comes from MariaDB. IP and hostname information comes only f
 
 ## Trust boundaries
 
-ADC VERIFY (`GPA`/`PAS`) is not implemented in v0.0.08. Management commands therefore require IPv4 loopback plus the configured class/capability boundary. `+passwd` and enabled `+regme` are explicit self-service exceptions; account IP binding and active moderation entries are enforced during identification.
+ADC VERIFY (`GPA`/`PAS`) is not implemented in v0.0.09. In-hub management
+commands therefore require IPv4 loopback plus the configured class/capability
+boundary. `+passwd` and enabled `+regme` are explicit self-service exceptions;
+account IP binding and active moderation entries are enforced during
+identification. The separate local settings tool has a different boundary:
+root execution plus the protected hub-home ownership and mode contract.
 
 ## Hub policy and self-registration
 
@@ -145,8 +221,31 @@ change after NORMAL, preventing identity-policy drift.
 
 ## Concurrency and deployment
 
-The hub uses one worker thread per client. `clients_mutex_` protects live ADC state, `moderation_mutex_` serializes admission decisions with new kick/ban rows, `temporary_classes_mutex_` protects restart-scoped overrides, and `Database` serializes the MariaDB connection. Socket writes use duplicated descriptors outside state locks and fail closed without blocking on client backpressure. DNS is executed outside the clients lock. The target deployment is Debian 13 with systemd, MariaDB, libmariadb and libgcrypt.
+The hub uses one worker thread per client. `clients_mutex_` protects live ADC
+state, `moderation_mutex_` serializes admission decisions with new kick/ban
+rows, `temporary_classes_mutex_` protects restart-scoped overrides, and each
+`Database` object serializes its MariaDB connection. Transactional `FOR UPDATE`
+locking protects a complete settings update across the daemon and CLI
+connections. Socket writes use duplicated descriptors outside state locks and
+fail closed without blocking on client backpressure. DNS is executed outside
+the clients lock. The target deployment is Debian 13 with systemd, MariaDB,
+libmariadb and libgcrypt.
 
-See ADR-0012 for the v0.0.08 moderation model, admission boundaries and
-migration decisions. ADR-0011 remains authoritative for class, nickname and
-self-registration policy.
+See ADR-0013 for the v0.0.09 home, configuration and local administration
+decision. ADR-0012 remains authoritative for kick/ban admission, and ADR-0011
+remains authoritative for class, nickname and self-registration policy.
+
+## v0.0.09 verification
+
+The release candidate was verified on Debian 13.6 with a clean Release build
+using warnings as errors and CTest 8/8, including ShellCheck. The installer ran
+repeatedly; its final current-installer run reused the existing credential
+without new password input. The schema was applied repeatedly and the complete
+30-row snapshot
+remained valid. `list`, `get`, `set` and `check`, invalid keys/ranges, both
+relational invariants and 12 concurrent update attempts ended with a successful
+final `check`. The systemd unit was active, passed unit verification and
+received exposure score `3.0`. A real Debian `ncdc 1.23.1` client completed
+ADC/TIGR echo and post-restart reconnect/echo. Local forbidden-name, C++ pair
+and secret scans passed. Remote GitHub CI is the required final merge gate for
+PR #9.

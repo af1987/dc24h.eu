@@ -1,6 +1,13 @@
 <!--
 install.md
 
+v0.0.09:
+  - install the protected /var/lib/dc24h.eu/dc24h.eu hub home
+  - document split runtime/MariaDB configuration and legacy migration
+  - add the root-only list/get/set/check settings administration workflow
+  - document secret-safe clean install and credential-preserving reinstall
+  - record reviewed Debian 13.6, systemd and ncdc validation
+
 v0.0.08:
   - install persistent kick/ban schema and v0.0.08 branch
   - document moderation operations, migration and two-client ncdc validation
@@ -43,24 +50,116 @@ Date: 2026-08-21
 
 Run on Debian 13 with root/sudo access and network access to Debian package repositories.
 
-The build requires a C++20 compiler, CMake, pkg-config, MariaDB Connector/C development files, libgcrypt development files, MariaDB server and `en_US.UTF-8` locale support.
+The build requires a C++20 compiler, CMake, pkg-config, MariaDB Connector/C
+development files, libgcrypt development files, MariaDB server, ShellCheck and
+`en_US.UTF-8` locale support.
 
 ## Automated install
 
 ```bash
 git clone https://github.com/af1987/dc24h.eu.git
 cd dc24h.eu
-git checkout agent/dc24h-v0.0.08
-sudo DC24H_DB_PASSWORD='replace-with-a-strong-password' ./scripts/install.sh
+git checkout agent/dc24h-v0.0.09
+sudo ./scripts/install.sh
 ```
 
-The installer builds the daemon, applies `sql/schema.sql`, runs CTest, installs the systemd unit and starts `dc24h.service`.
+On a clean install this command prompts without echo for a password containing
+16–128 characters from `A-Z`, `a-z`, `0-9`, `.`, `_` and `-`. For an
+unattended clean install, create a root-only input file without putting the
+secret in the command line or environment:
 
-## Database migration for v0.0.08
+```bash
+sudo install -o root -g root -m 0600 /dev/null /run/dc24h-db-password
+sudoedit /run/dc24h-db-password
+sudo env DC24H_DB_PASSWORD_FILE=/run/dc24h-db-password \
+  ./scripts/install.sh
+sudo rm -f /run/dc24h-db-password
+```
 
-The installer applies `sql/schema.sql`. v0.0.08 adds the append-oriented
-moderation table and two settings while retaining all earlier idempotent
-migrations:
+`DC24H_DB_PASSWORD_FILE` must name an absolute root-owned mode-`0600` regular,
+non-symlink file containing exactly one non-empty line. The environment value
+is only the path; `DC24H_DB_PASSWORD` is not supported. On reinstall, run
+`sudo ./scripts/install.sh` without a password input: the installer reuses the
+existing `database.cnf` password, or the inline password from the legacy config
+during its first migration. It rejects a supplied password file when either
+credential already exists and performs no implicit `ALTER USER` or password
+rotation.
+
+The installer accepts no positional arguments and always installs the
+`dc24h.eu` instance at the path below. Its privileged scripts use `/bin/bash`
+and a fixed system `PATH`. After dependency, account and directory preparation,
+the deployment sequence is:
+
+1. configure and build the Release targets, then pass CTest;
+2. configure MariaDB and apply `sql/schema.sql`;
+3. publish `dc24h.conf` and `database.cnf` atomically;
+4. run the just-built
+   `build/dc24h-settings /var/lib/dc24h.eu/dc24h.eu check`;
+5. install the tested binaries, unit, examples and wrapper;
+6. run the installed settings check, restart the unit and require it active;
+7. atomically replace legacy `/etc/dc24h.eu/dc24h.conf` with a symlink to the
+   non-secret home `dc24h.conf`.
+
+## Installed hub home
+
+The text `nazwa-huba` is a placeholder for one validated instance-name segment;
+it is not a literal directory. The v0.0.09 instance is exactly:
+
+`/var/lib/dc24h.eu/dc24h.eu`
+
+| Path | Owner/mode | Purpose |
+| --- | --- | --- |
+| `/var/lib/dc24h.eu` | `root:root`, `0755` | instance parent |
+| `/var/lib/dc24h.eu/dc24h.eu` | `root:dc24h`, `0750` | service-account home |
+| `dc24h.conf` | `root:dc24h`, `0640` | non-secret runtime settings |
+| `database.cnf` | `root:dc24h`, `0640` | MariaDB Connector/C options and password |
+| `scripts/` | `root:dc24h`, `0750` | instance-local tools |
+| `scripts/01-edit-hub-settings.sh` | `root:dc24h`, `0750` | settings wrapper |
+
+The system account has this home and `/usr/sbin/nologin`. The root-owned files
+are readable but not writable by the daemon.
+
+The installed `dc24h.conf` is:
+
+```ini
+hub_name=dc24h.eu
+hub_description=dc24h.eu Direct Connect ADC Hub
+listen_address=0.0.0.0
+listen_port=1511
+max_clients=1024
+locale=en_US.UTF-8
+dns_lookup=0
+
+database_config=database.cnf
+```
+
+The adjacent credential file is a standard MariaDB option file:
+
+```ini
+[client]
+protocol=tcp
+host=127.0.0.1
+port=3306
+database=dc24h
+user=dc24h
+password=<installed-secret>
+default-character-set=utf8mb4
+```
+
+The application validates exactly one `[client]` section and all seven options
+before MariaDB Connector/C reads the file through its default-file API. It
+rejects duplicate, unknown, missing or empty options, protocols other than
+`tcp`, character sets other than `utf8mb4`, symlinks and unsafe modes. A
+relative `database_config` must name a file beside `dc24h.conf`; it is resolved
+against that file's directory rather than the caller's working directory.
+Inline `database_*` options remain readable only for legacy migration and must
+not be mixed with `database_config`.
+
+## Database and configuration migration for v0.0.09
+
+v0.0.09 adds no application table or seed. The installer reapplies the complete
+idempotent schema, including the v0.0.08 append-oriented moderation table and
+the existing 30 settings:
 
 ```sql
 ALTER TABLE accounts
@@ -130,7 +229,70 @@ INSERT IGNORE INTO settings(setting_key, setting_value) VALUES
     ('key.user.password.initial.timeout', '300');
 ```
 
-Both the application schema bootstrap and `sql/schema.sql` apply this shape. Existing non-NULL password hashes are preserved.
+Both the application schema bootstrap and `sql/schema.sql` apply this shape.
+Existing non-NULL password hashes, accounts, policies, moderation history and
+setting values are preserved.
+
+For runtime configuration migration, the installer chooses the first available
+source in this order:
+
+1. `/var/lib/dc24h.eu/dc24h.eu/dc24h.conf`;
+2. legacy `/etc/dc24h.eu/dc24h.conf`;
+3. `config/dc24h.conf.example` from the checkout.
+
+It preserves non-database lines, removes every old inline `database_*` or
+existing `database_config` line, and appends one
+`database_config=database.cnf`. If `database.cnf` already exists, it is copied
+unchanged through the atomic staging step and its password is reused for the
+database connection. Otherwise a legacy inline password is preserved; only a
+clean installation without either source asks for a new secret. MariaDB user
+creation is idempotent and reinstall does not alter or silently rotate an
+existing account password. Local listener, locale, capacity and DNS settings
+are preserved.
+
+Only after `dc24h.service` is active does the installer replace the legacy
+`/etc/dc24h.eu/dc24h.conf` path with a symlink to
+`/var/lib/dc24h.eu/dc24h.eu/dc24h.conf`. The target is the non-secret runtime
+file; `database.cnf` remains only in the protected hub home.
+
+## Local database-backed settings administration
+
+Run the instance wrapper as root and always pass the canonical hub home:
+
+```bash
+DC24H_HUB_HOME=/var/lib/dc24h.eu/dc24h.eu
+DC24H_SETTINGS_TOOL="${DC24H_HUB_HOME}/scripts/01-edit-hub-settings.sh"
+
+sudo "${DC24H_SETTINGS_TOOL}" "${DC24H_HUB_HOME}" list
+sudo "${DC24H_SETTINGS_TOOL}" "${DC24H_HUB_HOME}" get key.kicks
+sudo "${DC24H_SETTINGS_TOOL}" "${DC24H_HUB_HOME}" set key.kicks 600
+sudo "${DC24H_SETTINGS_TOOL}" "${DC24H_HUB_HOME}" set key.nick.prefix ''
+sudo "${DC24H_SETTINGS_TOOL}" "${DC24H_HUB_HOME}" check
+```
+
+The shell script validates root execution, an existing non-symlink absolute
+path, one safe direct child of `/var/lib/dc24h.eu`, command arity and the
+presence of `/usr/local/bin/dc24h-settings`. It then delegates without reading
+`database.cnf` or invoking the MariaDB command-line client.
+
+The compiled tool repeats the canonical path, owner and mode checks, connects
+through `Config` and MariaDB Connector/C, and provides only:
+
+- `list` — prints all 30 canonical rows as sorted `key=value` lines;
+- `get KEY` — prints one canonical row; the historical timeout alias resolves
+  to `key.user.password.initial.timeout`;
+- `set KEY VALUE` — normalizes the value and prints the stored canonical value;
+- `check` — prints `OK: 30 canonical hub settings are valid` only after the
+  complete snapshot and cross-setting invariants pass.
+
+`set` starts a transaction, locks the complete setting selection using
+`SELECT ... FOR UPDATE`, validates the candidate snapshot, performs the upsert
+and commits. Unknown keys, malformed values, a missing/extra canonical row,
+`key.kicks > key.bans` or
+`key.nick.length.minimum > key.nick.length.maximum` fail and roll back. There
+is no raw-SQL or delete operation. A database-backed change is visible on the
+next relevant hub lookup; editing either configuration file requires
+`systemctl restart dc24h.service`.
 
 ## First Master account
 
@@ -192,7 +354,9 @@ Online session queries:
 !set key.user.info.userlist.subnet=[192.0.2.0/24]
 ```
 
-Set `dns_lookup=1` in `/etc/dc24h.eu/dc24h.conf` only if reverse DNS is desired, then restart the service. Default is `0`.
+Set `dns_lookup=1` in
+`/var/lib/dc24h.eu/dc24h.eu/dc24h.conf` only if reverse DNS is desired, then
+restart the service. Default is `0`.
 
 ## Moderation examples
 
@@ -228,8 +392,9 @@ Set `dns_lookup=1` in `/etc/dc24h.eu/dc24h.conf` only if reverse DNS is desired,
 !opchat private operator message
 ```
 
-All current policy, restriction and privilege keys are listed with defaults in
-`docs/dc24h.eu-v0.0.08.md`. The older account-policy duration keys retain
+All moderation policy, restriction and privilege keys are listed with defaults
+in `docs/dc24h.eu-v0.0.08.md`; the v0.0.09 local database editor is specified in
+`docs/dc24h.eu-v0.0.09.md`. The older account-policy duration keys retain
 `m`/`h`/`d`; new kick/ban actions accept `s`, `m`, `h`, `d`, `w`, `M` and `y`
 up to the `key.bans` ceiling. Reasons are mandatory and use `|` separators.
 
@@ -247,7 +412,8 @@ sudo journalctl -u dc24h.service -f
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential cmake pkg-config libmariadb-dev libgcrypt20-dev
+sudo apt-get install -y build-essential cmake pkg-config libmariadb-dev \
+  libgcrypt20-dev shellcheck
 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
@@ -256,39 +422,87 @@ ctest --test-dir build --output-on-failure
 
 ## ncdc ADC connection test
 
-Install the Debian 13 client, start the hub, and connect to its ADC listener:
+Install the Debian 13 client, start the hub, and create a different private
+session directory for every client:
 
 ```bash
 sudo apt-get install -y ncdc
-ncdc -n
+umask 077
+MASTER_SESSION_DIR="$(mktemp -d /tmp/dc24h-ncdc-master.XXXXXX)"
+GUEST_SESSION_DIR="$(mktemp -d /tmp/dc24h-ncdc-guest.XXXXXX)"
+
+# Run each command as a non-root user in its own terminal.
+ncdc -c "${MASTER_SESSION_DIR}" -n
+ncdc -c "${GUEST_SESSION_DIR}" -n
 ```
 
-In `ncdc`:
+In the first `ncdc` session:
 
 ```text
-/open dc24h adc://127.0.0.1:1511/
-/say ncdc-v0.0.08-connection-test
+/set nick V009Master
+/open dc24h-v009 adc://127.0.0.1:1511/
+/say ncdc-v0.0.09-connection-test
 ```
 
-A successful test shows the hub description, connected nickname/user count and
-echoed chat line. For moderation validation, connect a second isolated `ncdc`
-session with another nickname, kick it from the local Master session, verify
-immediate reconnect denial, then verify access after expiry. Repeat with a
-timed `key.bans.add`, `key.bans.remove`, and one hub restart before removal.
-v0.0.08 was validated this way with Debian `ncdc 1.23.1`. BASE/TIGR are
-negotiated in SUP and TIGR PID/CID validation remains active.
+In the second session, use a different persistent client identity:
+
+```text
+/set nick V009Guest
+/open dc24h-v009 adc://127.0.0.1:1511/
+/say ncdc-v0.0.09-connection-test
+```
+
+For reproduction, require both clients to complete ADC/TIGR identification,
+see the hub description and user count, and receive the echoed marker. On an
+isolated release database, also change a setting with
+`01-edit-hub-settings.sh`, run `check`, verify its effect on a new connection,
+restore the default, restart `dc24h.service`, reconnect and repeat the echo.
+BASE/TIGR remain negotiated in SUP and TIGR PID/CID validation remains active.
+
+The reviewed v0.0.09 run used Debian 13.6 and real `ncdc 1.23.1`. It completed
+ADC/TIGR identification and echoed `ncdc-v0.0.09-connection-test`; after a
+service restart it reconnected and echoed `ncdc-v0.0.09-after-restart`. The
+v0.0.08 historical moderation validation remains recorded in its own release
+documents.
+
+## v0.0.09 validation record
+
+- A clean Release build with warnings treated as errors completed; CTest,
+  including ShellCheck, passed 8/8.
+- The installer completed repeated executions. Its final current-installer run
+  supplied no password, reused `database.cnf` and left the service active.
+- The schema was applied repeatedly; all 30 canonical setting rows remained
+  present and valid.
+- `list`, `get`, `set` and `check`, invalid key/range cases, both relational
+  invariants and 12 concurrent update attempts ended with a successful final
+  `check`.
+- The systemd unit passed verification; `systemd-analyze security` reported
+  exposure score `3.0`.
+- The final current-installer run used no secret-valued environment variable.
+- Local forbidden-name, C++ pair and secret scans passed.
+- Remote GitHub CI is the required final merge gate for PR #9.
 
 ## MariaDB
 
-The application uses database `dc24h`, MariaDB Connector/C and `utf8mb4`. `accounts.user_class` stores the canonical numeric class. `accounts.password_hash` may be `NULL` for a passwordless registration or after an administrator reset.
+The application uses database `dc24h`, MariaDB Connector/C and `utf8mb4`.
+Connector/C reads connection options from the protected standard
+`database.cnf`; the service and settings CLI do not parse a password argument.
+`accounts.user_class` stores the canonical numeric class.
+`accounts.password_hash` may be `NULL` for a passwordless registration or after
+an administrator reset.
 
 ## Network
 
-The default ADC listener is TCP port `1511`. v0.0.08 remains IPv4-only. Administrative `!set` paths remain restricted to `127.0.0.1`; `+passwd` and explicitly enabled `+regme` are self-service exceptions.
+The default ADC listener is TCP port `1511`. v0.0.09 remains IPv4-only.
+Administrative `!set` paths remain restricted to `127.0.0.1`; `+passwd` and
+explicitly enabled `+regme` are self-service exceptions. The separate local
+settings CLI requires root and the protected hub-home contract.
 
 ## systemd
 
 The service runs as the dedicated `dc24h` account, depends on MariaDB and
-network-online, uses `en_US.UTF-8`, restarts on failure, has no capabilities and
-enables the Debian 13 systemd filesystem, device, namespace, kernel and runtime
+network-online, uses `en_US.UTF-8`, and restarts on failure. It sets `HOME` and
+`WorkingDirectory` to `/var/lib/dc24h.eu/dc24h.eu`, starts with that home's
+`dc24h.conf`, exposes the home through `ReadOnlyPaths`, has no capabilities and
+retains the Debian 13 filesystem, device, namespace, kernel and runtime
 hardening directives in `deploy/dc24h.service`.

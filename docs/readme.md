@@ -1,6 +1,11 @@
 <!--
 readme.md
 
+v0.0.09:
+  - index the protected per-hub home and split MariaDB configuration
+  - point operations to ADR-0013 and the v0.0.09 release manifest
+  - summarize the reviewed v0.0.09 release checks
+
 v0.0.08:
   - index persistent kick/ban behavior and ADR-0012
   - point operations to the v0.0.08 manifest
@@ -37,15 +42,16 @@ Date: 2026-08-21
 
 # dc24h.eu documentation
 
-This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.08`.
+This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.09`.
 
 ## Documents
 
-- `architecture.md` — ADC flow, persistence, account lifecycle, moderation enforcement and online queries.
-- `instructions.md` — permanent engineering, versioning, ADR, password-security and C++ pair rules.
+- `architecture.md` — ADC flow, persistence, per-hub deployment, account lifecycle, moderation enforcement and online queries.
+- `instructions.md` — permanent engineering, deployment security, versioning, ADR, password-security and C++ pair rules.
 - `changelog.md` — release history.
-- `install.md` — Debian 13 installation, tests, systemd and first-Master bootstrap.
-- `dc24h.eu-v0.0.08.md` — current kick/ban release manifest and command table.
+- `install.md` — Debian 13 installation, hub-home settings administration, tests, systemd and first-Master bootstrap.
+- `dc24h.eu-v0.0.09.md` — current per-hub home and settings administration release manifest.
+- `dc24h.eu-v0.0.08.md` — previous kick/ban release manifest and command table.
 - `dc24h.eu-v0.0.07.md` — previous policy/account-key manifest.
 - `dc24h.eu-v0.0.06.md` — previous moderation and interoperability manifest.
 - `dc24h.eu-v0.0.05.md` — previous release manifest.
@@ -65,6 +71,10 @@ This directory is the authoritative design and operations documentation for `dc2
 - Implementation: C++20
 - Database: MariaDB / `utf8mb4`
 - OS/service manager: Debian 13 / systemd
+- Installed hub home: `/var/lib/dc24h.eu/dc24h.eu`
+- Configuration: non-secret `dc24h.conf` plus protected `database.cnf`
+- Installer secret input: hidden prompt or root-owned mode-`0600` file on a
+  clean install; automatic credential reuse without rotation on reinstall
 - Author/date: `gpt-5.6-sol`, `2026-08-21`
 
 ## Current account profile
@@ -79,8 +89,19 @@ Supported protected commands:
 - `!set key.user.change.id.password=[id.password]` — replaces the password.
 - `!set key.user.info.userlist.class=[class]` — returns registered users and enabled/password state; `[]` defaults to class 0.
 
-v0.0.08 adds persistent kick rejoin blocks, typed permanent/temporary bans,
+v0.0.08 added persistent kick rejoin blocks, typed permanent/temporary bans,
 soft-unban audit and admission enforcement by nickname, CID, IPv4, range,
 prefix or exact share. The command table is in `dc24h.eu-v0.0.08.md`;
 architectural decisions are in ADR-0012. ADC connectivity and moderation flows
 are validated with `ncdc`.
+
+v0.0.09 moves the installed service into
+`/var/lib/dc24h.eu/dc24h.eu`, separates MariaDB credentials into a strict
+Connector/C option file, and adds root-only `list`, `get`, `set` and `check`
+operations through `01-edit-hub-settings.sh` and `dc24h-settings`. See
+`dc24h.eu-v0.0.09.md` and ADR-0013. Reviewed Debian 13.6 checks include a clean
+warnings-as-errors Release build, CTest 8/8 with ShellCheck, repeated installer
+executions and schema application, transactional settings cases, an
+active verified systemd unit, real `ncdc 1.23.1` ADC/TIGR echo/reconnect, and
+successful local forbidden-name, C++ pair and secret scans. Remote GitHub CI is
+the required final merge gate for PR #9.

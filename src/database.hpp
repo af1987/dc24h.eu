@@ -3,6 +3,10 @@
 
     - MariaDB persistence API
 
+        v0.0.09:
+            - expose validated hub-setting list/read operations for the local editor
+            - make setting updates transaction-safe across daemon and CLI processes
+
         v0.0.08:
             - persist auditable kick and ban entries
             - expose filtered admission matching, listing and soft-revocation APIs
@@ -57,6 +61,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace dc24h {
@@ -187,6 +192,7 @@ public:
                              std::string_view policy_key);
     RuntimeUserPolicy runtime_policy(std::string_view username);
     HubSettings hub_settings();
+    std::vector<std::pair<std::string, std::string>> hub_setting_entries();
     bool set_hub_setting(std::string_view key, std::string_view value);
     std::uint64_t add_moderation_entry(
         ModerationAction action,

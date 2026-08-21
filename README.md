@@ -1,6 +1,12 @@
 <!--
 README.md
 
+v0.0.09:
+  - raise project description to dc24h.eu-v0.0.09
+  - add the protected per-hub home and split MariaDB configuration
+  - document the validated local hub-settings administration tool
+  - record the reviewed Debian 13.6, systemd and ncdc release checks
+
 v0.0.08:
   - raise project description to dc24h.eu-v0.0.08
   - add persistent key.kicks/key.bans admission and audit behavior
@@ -39,7 +45,7 @@ Date: 2026-08-21
 
 # dc24h.eu
 
-`dc24h.eu-v0.0.08` is a C++20 Direct Connect ADC hub for Debian 13.
+`dc24h.eu-v0.0.09` is a C++20 Direct Connect ADC hub for Debian 13.
 
 ## Baseline
 
@@ -52,6 +58,8 @@ Date: 2026-08-21
 - Database: MariaDB with `utf8mb4`
 - Operating system: Debian 13
 - Service manager: systemd
+- Hub home: `/var/lib/dc24h.eu/dc24h.eu`
+- Runtime configuration: `dc24h.conf` plus protected `database.cnf`
 - Default ADC TCP port: 1511
 - Reverse DNS: disabled by default (`dns_lookup=0`)
 - Author: `gpt-5.6-sol`
@@ -72,13 +80,44 @@ Commands are sent through the existing protected hub-local `!set` command path a
 - Show all registered users in a class, including enabled state, in the private response:
   `!set key.user.info.userlist.class=[class]`
 
-The v0.0.08 command set adds `key.kicks` (default rejoin delay), `key.bans`
+The v0.0.08 command set added `key.kicks` (default rejoin delay), `key.bans`
 (maximum temporary duration), typed kick/ban operations and append-oriented
 MariaDB audit. Active address bans are checked after accept; nickname, ADC CID,
 prefix and share bans are checked before NORMAL. See
 `docs/dc24h.eu-v0.0.08.md` for syntax and defaults.
 
 `key.user.new.id.password` is not an alias for password change. If a password already exists, no database change is made. `key.user.change.username.password=[username.]` resets a password to `NULL`, after which the current local nickname may set it once with `+passwd <password>`.
+
+## Per-hub deployment and local settings
+
+v0.0.09 installs the service account and runtime files under the protected home
+`/var/lib/dc24h.eu/dc24h.eu`. The root-owned `dc24h.conf` contains non-secret
+hub and listener options and refers to the adjacent `database.cnf`. The latter
+is a strict MariaDB `[client]` option file which is validated by the application
+and read by MariaDB Connector/C; both files are installed as `root:dc24h` mode
+`0640`.
+
+The root-only wrapper in the hub home delegates to `/usr/local/bin/dc24h-settings`
+and exposes only four database-backed operations:
+
+```text
+01-edit-hub-settings.sh HUB_HOME list
+01-edit-hub-settings.sh HUB_HOME get KEY
+01-edit-hub-settings.sh HUB_HOME set KEY VALUE
+01-edit-hub-settings.sh HUB_HOME check
+```
+
+All operations require one canonical direct child of `/var/lib/dc24h.eu`,
+validate the complete set of 30 settings, and never provide an arbitrary SQL or
+delete interface. Updates lock the setting rows with `FOR UPDATE`, validate the
+complete candidate snapshot and commit or roll back atomically.
+
+On a clean install, `scripts/install.sh` obtains the database password through
+a hidden prompt or an absolute root-owned mode-`0600` file named by
+`DC24H_DB_PASSWORD_FILE`. A reinstall automatically reuses the protected
+`database.cnf` (or a legacy inline password during migration), does not run a
+silent password rotation, and never accepts the password itself in an
+environment variable or command argument.
 
 ## User classes
 
@@ -97,9 +136,13 @@ Passwords are persisted only as salted PBKDF2-HMAC-SHA256 hashes. Passwordless r
 
 The management trust boundary remains loopback-only (`127.0.0.1`) because ADC VERIFY (`GPA`/`PAS`) is not implemented. Timed policies persist in MariaDB with UTC expiry and are enforced before ADC routing. Delegated registration is capped at class 1.
 
-ADC/TIGR connectivity, kick denial/expiry, ban/unban and restart persistence are
-validated with Debian 13 `ncdc 1.23.1` against an isolated MariaDB instance.
+The v0.0.09 candidate was exercised on Debian 13.6 with a clean Release build
+using warnings as errors, CTest 8/8 including ShellCheck, repeated
+schema/install runs, all four settings operations, negative and concurrent
+setting updates, an active verified systemd unit and real `ncdc 1.23.1`
+ADC/TIGR echo/reconnect checks. Local forbidden-name, C++ pair and secret scans
+also passed. Remote GitHub CI remains the required final merge gate for PR #9.
 
 See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`,
-`docs/dc24h.eu-v0.0.08.md` and
-`docs/adr/0012-persistent-kicks-bans.md`.
+`docs/dc24h.eu-v0.0.09.md` and
+`docs/adr/0013-per-hub-home-and-settings-administration.md`.

@@ -1,0 +1,17 @@
+# database.cnf.example
+#
+# v0.0.09:
+#   - add the canonical MariaDB Connector/C client option file
+#   - keep the database password outside the non-secret hub configuration
+#
+# Author: gpt-5.6-sol
+# Date: 2026-08-21
+
+[client]
+protocol=tcp
+host=127.0.0.1
+port=3306
+database=dc24h
+user=dc24h
+password=CHANGE_ME
+default-character-set=utf8mb4

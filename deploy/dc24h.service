@@ -1,5 +1,10 @@
 # dc24h.service
 #
+# v0.0.09:
+#   - raise service description to dc24h.eu-v0.0.09
+#   - start from the protected /var/lib/dc24h.eu/dc24h.eu hub home
+#   - expose the hub home as HOME and an explicit read-only service path
+#
 # v0.0.08:
 #   - raise service description to dc24h.eu-v0.0.08
 #   - tighten the Debian 13 systemd sandbox for the moderation release
@@ -37,7 +42,7 @@
 # Date: 2026-08-21
 
 [Unit]
-Description=dc24h.eu Direct Connect ADC Hub v0.0.08
+Description=dc24h.eu Direct Connect ADC Hub v0.0.09
 Documentation=https://github.com/af1987/dc24h.eu
 After=network-online.target mariadb.service
 Wants=network-online.target
@@ -49,7 +54,9 @@ User=dc24h
 Group=dc24h
 Environment=LANG=en_US.UTF-8
 Environment=LC_ALL=en_US.UTF-8
-ExecStart=/usr/local/bin/dc24h.eu /etc/dc24h.eu/dc24h.conf
+Environment=HOME=/var/lib/dc24h.eu/dc24h.eu
+WorkingDirectory=/var/lib/dc24h.eu/dc24h.eu
+ExecStart=/usr/local/bin/dc24h.eu /var/lib/dc24h.eu/dc24h.eu/dc24h.conf
 Restart=on-failure
 RestartSec=3s
 LimitNOFILE=65536
@@ -61,6 +68,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectHome=true
 ProtectSystem=strict
+ReadOnlyPaths=/var/lib/dc24h.eu/dc24h.eu
 ProtectClock=true
 ProtectKernelLogs=true
 ProtectKernelTunables=true

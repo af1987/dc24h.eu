@@ -1,6 +1,9 @@
 /*
     main.cpp
 
+    v0.0.09:
+        - use the protected per-hub home as the default config location
+
     v0.0.02:
         - report dc24h.eu-v0.0.02 startup metadata through version module
         - start the ADC 1.0.4/TIGR-capable protocol core
@@ -12,7 +15,7 @@
         - print dc24h.eu-v0.0.01 startup metadata
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-21
 */
 
 #include "main.hpp"
@@ -44,7 +47,9 @@ namespace dc24h {
 
 int dc24h_main(int argc, char** argv) {
     const std::string config_path =
-        argc >= 2 ? argv[1] : "/etc/dc24h.eu/dc24h.conf";
+        argc >= 2
+            ? argv[1]
+            : "/var/lib/dc24h.eu/dc24h.eu/dc24h.conf";
 
     if (argc > 2) {
         std::cerr << "Usage: dc24h.eu [config-file]\n";

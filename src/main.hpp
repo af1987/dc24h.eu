@@ -1,11 +1,14 @@
 /*
     main.hpp
 
+    v0.0.09:
+        - retain the entrypoint contract for per-hub-home startup
+
     v0.0.01:
         - add application entrypoint contract
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-21
 */
 
 #pragma once
