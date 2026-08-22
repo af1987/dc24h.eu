@@ -1,6 +1,10 @@
 <!--
 changelog.md
 
+v0.0.14:
+  - add same-port token-authenticated WebAdmin and settings API
+  - add protected token provisioning and MariaDB administrative audit
+
 v0.0.13:
   - add ADC syntax/length/login-order validation and explicit login flags
   - add typed flood/authentication temporary bans and SQL escaping boundary
@@ -50,6 +54,45 @@ Date: 2026-08-22
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.14 — 2026-08-22
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- Paired `webadmin.cpp` / `webadmin.hpp` with fragmented-prefix protocol
+  classification, bounded HTTP/1.1 parsing, UTF-8 dashboard and API tests.
+- Authenticated status and canonical hub-settings endpoints on the active ADC
+  or ADCS port; no separate listener or port.
+- Protected installer-generated `webadmin.token`, `webadmin_audit` persistence,
+  ADR-0018 and the v0.0.14 release manifest.
+
+### Changed
+
+- Raised runtime, CMake, systemd, documentation and test metadata to `0.0.14`.
+- ADC admission now occurs after the bounded protocol probe, so WebAdmin
+  requests never receive SIDs or affect client limits/reconnect counters.
+- Hub setting writes from WebAdmin reuse the existing complete-snapshot
+  transaction and validation path.
+
+### Security
+
+- WebAdmin is loopback-only by default. API access requires a constant-time
+  checked bearer token loaded from an absolute non-symlink owner-only file.
+- HTTP rejects invalid framing, duplicate headers, transfer encoding and
+  oversized requests, serves one request per connection and emits restrictive
+  CSP/cache/frame/content-type headers.
+- Audit insertion uses a MariaDB prepared statement; neither token nor database
+  credentials are returned or stored in the audit table.
+
+### Validation
+
+- Warnings-as-errors Release build and CTest 11/11 passed.
+- Repeated schema application, WebAdmin HTTP/HTTPS status/settings/update,
+  prepared audit insertion, systemd verification and TLS policy passed.
+- Real ncdc completed ADC/TIGR echo on the shared port and automatically
+  reconnected/echoed after systemd restart. Full details are in the manifest.
 
 ## dc24h.eu-v0.0.13 — 2026-08-22
 

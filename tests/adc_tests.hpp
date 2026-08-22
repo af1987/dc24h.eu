@@ -1,6 +1,9 @@
 /*
     adc_tests.hpp
 
+    v0.0.14:
+        - retain ADC regression declarations for release 0.0.14
+
     v0.0.13:
         - retain declarations for protocol guard and login-flag tests
 

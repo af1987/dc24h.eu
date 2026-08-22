@@ -1,6 +1,10 @@
 /*
     config.cpp
 
+    v0.0.14:
+        - load and validate the protected WebAdmin bearer-token file
+        - parse loopback and bounded-request controls for same-port HTTP
+
     v0.0.13:
         - parse and bound protocol-flood rate/window/ban settings
 
@@ -92,6 +96,39 @@ void validate_tls_file(const std::string& configured,
             perms::none) {
         throw std::runtime_error("tls_private_key must not be world-readable");
     }
+}
+
+std::string load_webadmin_token(const std::string& configured) {
+    const std::filesystem::path path(configured);
+    if (!path.is_absolute() ||
+        std::filesystem::is_symlink(std::filesystem::symlink_status(path)) ||
+        !std::filesystem::is_regular_file(std::filesystem::status(path))) {
+        throw std::runtime_error(
+            "webadmin_token_file must be an absolute regular non-symlink file");
+    }
+    using perms = std::filesystem::perms;
+    const auto permissions = std::filesystem::status(path).permissions();
+    const auto allowed = perms::owner_read | perms::owner_write;
+    if ((permissions & perms::owner_read) == perms::none ||
+        (permissions & ~allowed) != perms::none) {
+        throw std::runtime_error(
+            "webadmin_token_file permissions must be 0600 or stricter");
+    }
+    std::ifstream input(path);
+    std::string token;
+    std::string extra;
+    if (!std::getline(input, token) || std::getline(input, extra) ||
+        token.size() < 32U || token.size() > 128U) {
+        throw std::runtime_error(
+            "webadmin token must be one line containing 32..128 characters");
+    }
+    for (const unsigned char character : token) {
+        if (character < 0x21U || character > 0x7eU) {
+            throw std::runtime_error(
+                "webadmin token must contain printable ASCII without spaces");
+        }
+    }
+    return token;
 }
 
 std::pair<std::string, std::string> parse_assignment(
@@ -286,6 +323,10 @@ Config load_config(const std::string& path) {
         else if (key == "timeout_myinfo") config.timeout.MyINFO = parse_integer<std::uint32_t>(value, key);
         else if (key == "timeout_password") config.timeout.Password = parse_integer<std::uint32_t>(value, key);
         else if (key == "timeout_general") config.timeout.General = parse_integer<std::uint32_t>(value, key);
+        else if (key == "webadmin_enabled") config.webadmin.enabled = parse_boolean(value, key);
+        else if (key == "webadmin_loopback_only") config.webadmin.loopback_only = parse_boolean(value, key);
+        else if (key == "webadmin_token_file") config.webadmin.token_file = value;
+        else if (key == "webadmin_max_request_size") config.webadmin.maximum_request_size = parse_integer<std::size_t>(value, key);
         else if (key == "database_config") {
             if (value.empty()) {
                 throw std::runtime_error("database_config must not be empty");
@@ -360,6 +401,19 @@ Config load_config(const std::string& path) {
     }
     if (config.max_clients == 0) {
         throw std::runtime_error("max_clients must be greater than zero");
+    }
+    if (config.webadmin.maximum_request_size < 4096U ||
+        config.webadmin.maximum_request_size > 65536U) {
+        throw std::runtime_error(
+            "webadmin_max_request_size must be in range 4096..65536");
+    }
+    if (config.webadmin.enabled) {
+        if (config.webadmin.token_file.empty()) {
+            throw std::runtime_error(
+                "webadmin_token_file is required when WebAdmin is enabled");
+        }
+        config.webadmin.token =
+            load_webadmin_token(config.webadmin.token_file);
     }
     if (config.anti_abuse.pwd_tmpban == 0U ||
         config.anti_abuse.pwd_tmpban > 86400U ||

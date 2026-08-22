@@ -1,6 +1,10 @@
 <!--
 instructions.md
 
+v0.0.14:
+  - require same-port bounded WebAdmin classification and token security
+  - require canonical settings-only administration and prepared audit writes
+
 v0.0.13:
   - require ADC syntax/length/order validation and explicit login flags
   - require typed flood/auth temporary bans and document the NMDC exclusion
@@ -64,7 +68,7 @@ Date: 2026-08-22
 
 # Engineering instructions
 
-These rules apply to `dc24h.eu-v0.0.13` and later changes.
+These rules apply to `dc24h.eu-v0.0.14` and later changes.
 
 ## Mandatory baseline
 
@@ -119,6 +123,26 @@ These rules apply to `dc24h.eu-v0.0.13` and later changes.
 - Keep active nonzero timeouts named `Key`, `ValidateNick`, `Login`, `MyINFO`,
   `Password` and `General`, mapped to their corresponding connection stages.
 
+## WebAdmin rules
+
+- WebAdmin must share an existing active ADC/ADCS listener; do not open a
+  separate administration port.
+- Classify only a bounded, valid HTTP/1.1 request line before ADC admission.
+  Fragmented ADC and HTTP prefixes must be tested. HTTP must not allocate an
+  ADC SID, consume ADC client capacity or alter reconnect/clone counters.
+- Require CRLF framing, `Host`, one bounded `Content-Length`, no transfer
+  encoding, one request per connection and security/cache response headers.
+- Keep `webadmin_loopback_only=1` as the default. Non-loopback deployment must
+  use TLS or a trusted authenticated local reverse proxy.
+- API calls require a bearer token from an absolute regular non-symlink file,
+  readable only by its owner. Never log, return, store in MariaDB or commit the
+  token; compare it without early exit.
+- WebAdmin may list and update only canonical hub settings. It must reuse
+  `normalize_hub_setting()` and full-snapshot transactional invariants. Do not
+  expose arbitrary SQL, filesystem access or account/password operations.
+- Administrative writes must append source, action, target, outcome and UTC
+  timestamp to `webadmin_audit`; new audit SQL uses bound parameters.
+
 ## Account and user-class rules
 
 Canonical numeric classes are `-1, 0, 1, 2, 3, 4, 5, 10`. Other class values must be rejected.
@@ -163,7 +187,8 @@ The command semantics are intentionally non-overlapping:
   and anti-abuse behavior is documented in `docs/dc24h.eu-v0.0.11.md` and
   ADR-0015. v0.0.12 TLS, bounded-I/O and timeout behavior is documented in
   `docs/dc24h.eu-v0.0.12.md` and ADR-0016. v0.0.13 ADC validation and typed-ban
-  behavior is documented in `docs/dc24h.eu-v0.0.13.md` and ADR-0017.
+  behavior is documented in `docs/dc24h.eu-v0.0.13.md` and ADR-0017. v0.0.14
+  WebAdmin behavior is documented in `docs/dc24h.eu-v0.0.14.md` and ADR-0018.
 - Global policy values are validated before storage in MariaDB; unknown keys and malformed values are rejected.
 - `+regme` must enforce configured class, nickname prefix, share and password rules.
 - Passwordless accounts receive a finite first-password deadline.
@@ -215,7 +240,7 @@ Until ADC VERIFY (`GPA`/`PAS`) authenticates registered users, remote nicknames 
 - `/var/lib/dc24h.eu` is `root:root` mode `0755`. The instance home and its
   `scripts/` directory are `root:dc24h` mode `0750`; `dc24h.conf` and
   `database.cnf` are `root:dc24h` mode `0640`; the installed wrapper is
-  `root:dc24h` mode `0750`.
+  `root:dc24h` mode `0750`; `webadmin.token` is `dc24h:dc24h` mode `0600`.
 - The `dc24h` service account uses the instance path as its account home, keeps
   `/usr/sbin/nologin`, and must not have write access to the root-owned runtime
   files.
@@ -327,6 +352,9 @@ Before publishing a PR:
 - run a real ADC connection and public-message echo test with Debian 13 `ncdc`
   using a separate `-c` session directory for every client when connection,
   protocol, configuration or deployment behavior changes.
+- verify dashboard, unauthorized/authorized API behavior and an audited
+  settings update over the active hub port; verify ADC still connects on that
+  same port after repeated HTTP requests.
 - for kick/ban changes, run two isolated `ncdc` clients and verify immediate
   denial, expiry or soft-unban recovery, and persistence across a hub restart.
 - apply `sql/schema.sql` twice against an isolated MariaDB instance and verify

@@ -1,5 +1,9 @@
 # CMakeLists.txt
 #
+# v0.0.14:
+#   - raise CMake project version to 0.0.14
+#   - build same-port WebAdmin sources and focused security tests
+#
 # v0.0.13:
 #   - raise CMake project version to 0.0.13
 #   - link bounded-length validation into the ADC protocol test target
@@ -64,7 +68,7 @@
 
 cmake_minimum_required(VERSION 3.25)
 
-project(dc24h VERSION 0.0.13 LANGUAGES CXX)
+project(dc24h VERSION 0.0.14 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -125,6 +129,8 @@ add_executable(dc24h.eu
     src/adc.hpp
     src/server.cpp
     src/server.hpp
+    src/webadmin.cpp
+    src/webadmin.hpp
 )
 
 target_include_directories(dc24h.eu PRIVATE src)
@@ -284,6 +290,22 @@ if(BUILD_TESTING)
         -UNDEBUG
     )
     add_test(NAME split_runtime_database_config COMMAND dc24h_config_tests)
+
+    add_executable(dc24h_webadmin_tests
+        tests/webadmin_tests.cpp
+        tests/webadmin_tests.hpp
+        src/webadmin.cpp
+        src/webadmin.hpp
+        src/version.cpp
+        src/version.hpp
+    )
+    target_include_directories(dc24h_webadmin_tests PRIVATE src tests)
+    target_compile_options(dc24h_webadmin_tests PRIVATE
+        ${DC24H_WARNING_FLAGS}
+        -UNDEBUG
+    )
+    add_test(NAME same_port_webadmin_security COMMAND dc24h_webadmin_tests)
+
     add_test(NAME settings_cli_help COMMAND dc24h-settings --help)
 
     find_program(BASH_EXECUTABLE bash REQUIRED)

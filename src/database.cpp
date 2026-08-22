@@ -1,6 +1,10 @@
 /*
     database.cpp
 
+    v0.0.14:
+        - create the WebAdmin audit table
+        - persist administrative changes with a prepared statement
+
     v0.0.13:
         - centralize context-aware SQL literal escaping in WriteStringConstant()
 
@@ -279,6 +283,17 @@ void Database::initialize_schema() {
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
     execute_locked(
+        "CREATE TABLE IF NOT EXISTS webadmin_audit ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,"
+        "remote_address VARCHAR(64) NOT NULL,"
+        "action_name VARCHAR(64) NOT NULL,"
+        "target_name VARCHAR(128) NOT NULL,"
+        "succeeded BOOLEAN NOT NULL,"
+        "created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),"
+        "INDEX idx_webadmin_audit_created_at (created_at)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    execute_locked(
         "CREATE TABLE IF NOT EXISTS accounts ("
         "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,"
         "nick VARCHAR(64) NOT NULL UNIQUE,"
@@ -471,6 +486,54 @@ void Database::record_event(std::string_view sid,
     execute_locked(
         "INSERT INTO connection_events(sid,event_type,remote_address) VALUES('" +
         sid_sql + "','" + event_sql + "','" + remote_sql + "')");
+}
+
+void Database::record_webadmin_audit(std::string_view remote_address,
+                                     std::string_view action,
+                                     std::string_view target,
+                                     bool succeeded) {
+    std::lock_guard lock(mutex_);
+    if (connection_ == nullptr) {
+        throw std::runtime_error("MariaDB is not connected");
+    }
+    MYSQL_STMT* statement = mysql_stmt_init(connection_);
+    if (statement == nullptr) {
+        throw std::runtime_error("MariaDB statement allocation failed");
+    }
+    constexpr std::string_view sql =
+        "INSERT INTO webadmin_audit"
+        "(remote_address,action_name,target_name,succeeded) VALUES(?,?,?,?)";
+    if (mysql_stmt_prepare(statement, sql.data(),
+                           static_cast<unsigned long>(sql.size())) != 0) {
+        const std::string error(mysql_stmt_error(statement));
+        mysql_stmt_close(statement);
+        throw std::runtime_error("MariaDB prepare failed: " + error);
+    }
+
+    std::array<unsigned long, 3> lengths{
+        static_cast<unsigned long>(remote_address.size()),
+        static_cast<unsigned long>(action.size()),
+        static_cast<unsigned long>(target.size())};
+    signed char success_value = succeeded ? 1 : 0;
+    std::array<MYSQL_BIND, 4> bindings{};
+    const std::array<std::string_view, 3> strings{
+        remote_address, action, target};
+    for (std::size_t index = 0; index < strings.size(); ++index) {
+        bindings[index].buffer_type = MYSQL_TYPE_STRING;
+        bindings[index].buffer = const_cast<char*>(strings[index].data());
+        bindings[index].buffer_length = lengths[index];
+        bindings[index].length = &lengths[index];
+    }
+    bindings[3].buffer_type = MYSQL_TYPE_TINY;
+    bindings[3].buffer = &success_value;
+    bindings[3].buffer_length = sizeof(success_value);
+    if (mysql_stmt_bind_param(statement, bindings.data()) != 0 ||
+        mysql_stmt_execute(statement) != 0) {
+        const std::string error(mysql_stmt_error(statement));
+        mysql_stmt_close(statement);
+        throw std::runtime_error("MariaDB WebAdmin audit failed: " + error);
+    }
+    mysql_stmt_close(statement);
 }
 
 std::uint64_t Database::create_user(std::string_view username,

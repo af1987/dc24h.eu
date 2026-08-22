@@ -1,5 +1,8 @@
 -- schema.sql
 --
+-- v0.0.14:
+--   - add an append-only WebAdmin settings-change audit table
+--
 -- v0.0.10:
 --   - allow exact and wildcard hostname targets in persistent ban entries
 --   - retain indexed active ban matching and migration-safe constraints
@@ -36,7 +39,7 @@
 --   - add accounts, settings and connection event tables
 --
 -- Author: gpt-5.6-sol
--- Date: 2026-08-21
+-- Date: 2026-08-22
 
 CREATE DATABASE IF NOT EXISTS dc24h
     CHARACTER SET utf8mb4
@@ -52,6 +55,16 @@ CREATE TABLE IF NOT EXISTS connection_events (
     created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
     INDEX idx_connection_events_created_at (created_at),
     INDEX idx_connection_events_sid (sid)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS webadmin_audit (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    remote_address VARCHAR(64) NOT NULL,
+    action_name VARCHAR(64) NOT NULL,
+    target_name VARCHAR(128) NOT NULL,
+    succeeded BOOLEAN NOT NULL,
+    created_at TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    INDEX idx_webadmin_audit_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS accounts (

@@ -1,6 +1,10 @@
 <!--
 architecture.md
 
+v0.0.14:
+  - add bounded same-port ADC/HTTP protocol classification
+  - add token-authenticated WebAdmin settings and audit boundaries
+
 v0.0.13:
   - add explicit ADC syntax, length, login-order and login-flag boundaries
   - add typed protocol-flood/authentication bans and SQL escaping status
@@ -53,15 +57,15 @@ Author: gpt-5.6-sol
 Date: 2026-08-22
 -->
 
-# Architecture — dc24h.eu-v0.0.13
+# Architecture — dc24h.eu-v0.0.14
 
 ## Baseline
 
 `dc24h.eu` is a C++20 Direct Connect hub for Debian 13. It implements the ADC
 1.0.4 BASE/TIGR profile, validates UTF-8, stores persistent state in MariaDB
-`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.13
-retains native ADCS and bounded transports, then makes ADC syntax, logical-line
-length, login ordering, login flags and protocol-flood enforcement explicit.
+`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.14
+adds bounded HTTP/1.1 WebAdmin classification on the existing listener ports
+without changing the ADC wire protocol.
 
 ## Runtime flow
 
@@ -73,10 +77,12 @@ length, login ordering, login flags and protocol-flood enforcement explicit.
    all seven required options, file type and safe permissions. `Database` then
    asks MariaDB Connector/C to read that option file, connects with `utf8mb4`
    and applies idempotent schema updates.
-4. `Server` listens on IPv4 TCP port 1511 for ADC and, when compiled and
+4. `Server` listens on IPv4 TCP port 1511 for ADC/HTTP and, when compiled and
    configured, port 1512 for ADCS. OpenSSL performs a deadline-bounded TLS
-   handshake before ADC input is parsed. In `tls_only_mode`, port 1511 is not
-   opened. `AntiAbuse` rejects a
+   handshake before protocol classification. A bounded first-line probe routes
+   valid HTTP/1.1 to WebAdmin and all other input to ADC. In `tls_only_mode`,
+   port 1511 is not opened. HTTP requests never allocate an ADC SID or consume
+   ADC capacity/reconnect accounting. For ADC, `AntiAbuse` rejects a
    current temporary ban, an over-limit source address or a reconnect inside
    the configured interval before database and DNS admission work. The server
    then checks active address,
@@ -123,6 +129,8 @@ length, login ordering, login flags and protocol-flood enforcement explicit.
   account invariants, UTC-expiring policies, transaction-safe setting snapshots
   and centralized `WriteStringConstant()` SQL literal escaping.
 - `src/server.cpp` / `src/server.hpp`: listener, sessions, moderation enforcement, private OPChat, temporary classes, online IPv4 and optional reverse DNS.
+- `src/webadmin.cpp` / `src/webadmin.hpp`: bounded HTTP parsing, same-port
+  classification, dashboard, bearer authorization and status/settings API.
 - `src/config.cpp` / `src/config.hpp`: runtime configuration, split MariaDB
   option-file validation, relative path resolution and legacy inline migration support.
 - `src/settings_cli.cpp` / `src/settings_cli.hpp`: root-only `list`, `get`, `set`
@@ -132,7 +140,24 @@ length, login ordering, login flags and protocol-flood enforcement explicit.
 - `scripts/install.sh`: creates the hub home, migrates runtime configuration,
   securely creates or reuses protected MariaDB options, validates the staged
   deployment and installs/restarts the service.
-- `src/version.cpp` / `src/version.hpp`: `0.0.13`, release identity, author and date.
+- `src/version.cpp` / `src/version.hpp`: `0.0.14`, release identity, author and date.
+
+## WebAdmin security boundary
+
+The HTTP dashboard and API share the active plaintext or TLS hub listener.
+Only HTTP/1.1 with CRLF framing, a `Host` header, one bounded `Content-Length`
+and no transfer encoding is accepted; each connection handles exactly one
+request and closes. The default `webadmin_loopback_only=1` policy rejects
+non-loopback sources. API requests additionally require a bearer token loaded
+from an absolute, non-symlink, owner-readable mode-`0600` file and compared in
+constant time. The HTML shell contains no token or administrative data.
+
+`GET /webadmin/api/v1/status` reports release and ADC client capacity.
+`GET`/`PUT /webadmin/api/v1/settings` list or update only the 30 canonical hub
+settings. Updates call the existing transaction-safe validation path and use a
+prepared statement to append success/failure metadata to `webadmin_audit`.
+There is no arbitrary SQL, file access, account mutation or remote-command
+endpoint in v0.0.14.
 
 ## Input-validation and temporary-ban boundary
 
@@ -161,7 +186,8 @@ Every production and test `*.cpp` has a matching `*.hpp` and vice versa.
 The installed instance has the fixed canonical home
 `/var/lib/dc24h.eu/dc24h.eu`. The base directory is `root:root` mode `0755`;
 the instance home and `scripts/` are `root:dc24h` mode `0750`. `dc24h.conf` and
-`database.cnf` are `root:dc24h` mode `0640`, and the installed wrapper is mode
+`database.cnf` are `root:dc24h` mode `0640`, `webadmin.token` is
+`dc24h:dc24h` mode `0600`, and the installed wrapper is mode
 `0750`. The `dc24h` account uses the instance path as its account home but has
 `/usr/sbin/nologin`. systemd additionally exposes the home through
 `ReadOnlyPaths`, so the daemon can read but cannot replace its configuration or

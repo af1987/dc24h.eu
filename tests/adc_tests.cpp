@@ -1,6 +1,9 @@
 /*
     adc_tests.cpp
 
+    v0.0.14:
+        - verify canonical 0.0.14 release metadata
+
     v0.0.13:
         - verify syntax/length/login-order guards and explicit login flags
         - verify canonical 0.0.13 release metadata
@@ -170,12 +173,12 @@ void run_protocol_tests() {
 }  // namespace dc24h::tests
 
 int main() {
-    assert(dc24h::version() == "0.0.13");
-    assert(dc24h::release_name() == "dc24h.eu-v0.0.13");
+    assert(dc24h::version() == "0.0.14");
+    assert(dc24h::release_name() == "dc24h.eu-v0.0.14");
     assert(dc24h::project_author() == "gpt-5.6-sol");
     assert(dc24h::project_date() == "2026-08-22");
     dc24h::tests::run_hash_tests();
     dc24h::tests::run_protocol_tests();
-    std::cout << "dc24h.eu v0.0.13 tests passed\n";
+    std::cout << "dc24h.eu v0.0.14 tests passed\n";
     return 0;
 }

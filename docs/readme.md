@@ -1,6 +1,10 @@
 <!--
 readme.md
 
+v0.0.14:
+  - index same-port WebAdmin, protected bearer tokens and audit persistence
+  - point to ADR-0018 and the v0.0.14 release manifest
+
 v0.0.13:
   - index ADC input validation and typed temporary-ban controls
   - point to ADR-0017 and the v0.0.13 release manifest
@@ -58,7 +62,7 @@ Date: 2026-08-22
 
 # dc24h.eu documentation
 
-This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.13`.
+This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.14`.
 
 ## Documents
 
@@ -66,7 +70,8 @@ This directory is the authoritative design and operations documentation for `dc2
 - `instructions.md` — permanent engineering, deployment security, versioning, ADR, password-security and C++ pair rules.
 - `changelog.md` — release history.
 - `install.md` — Debian 13 installation, hub-home settings administration, tests, systemd and first-Master bootstrap.
-- `dc24h.eu-v0.0.13.md` — current ADC validation and protocol-flood release manifest.
+- `dc24h.eu-v0.0.14.md` — current same-port WebAdmin release manifest.
+- `dc24h.eu-v0.0.13.md` — previous ADC validation and protocol-flood release manifest.
 - `dc24h.eu-v0.0.12.md` — previous TLS, bounded-I/O and timeout release manifest.
 - `dc24h.eu-v0.0.11.md` — previous Argon2id and anti-abuse release manifest.
 - `dc24h.eu-v0.0.10.md` — previous password, RBAC and hostname-ban release manifest.
@@ -94,6 +99,8 @@ This directory is the authoritative design and operations documentation for `dc2
 - Installed hub home: `/var/lib/dc24h.eu/dc24h.eu`
 - Configuration: non-secret `dc24h.conf` plus protected `database.cnf`
 - Network: ADC on 1511 and configured ADCS/TLS 1.3 on 1512; optional TLS-only
+- WebAdmin: HTTP/HTTPS on the same active port, loopback-only by default,
+  bearer-token API and MariaDB audit
 - Resource controls: hard input/output ceilings and phase-specific deadlines
 - Protocol controls: syntax/length/order guards, explicit login flags and
   typed per-IP flood/authentication temporary bans
@@ -155,3 +162,10 @@ explicit login-stage flags and a sliding command-rate window that applies
 `eBT_FLOOD`. Authorization IP/password failures apply `eBT_PASSW`. The ADC-only
 hub intentionally excludes NMDC Lock-to-Key; see `dc24h.eu-v0.0.13.md` and
 ADR-0017.
+
+v0.0.14 adds a bounded HTTP/1.1 classifier before ADC admission. `/webadmin`
+and its status/settings API use the existing ADC/ADCS listener, never a third
+port. The API requires a token from a service-owned mode-`0600` file; the
+default loopback boundary remains active. Setting writes reuse canonical
+validation and append to `webadmin_audit`. See `dc24h.eu-v0.0.14.md` and
+ADR-0018.
