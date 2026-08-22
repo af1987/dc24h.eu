@@ -1,6 +1,9 @@
 /*
     adc_tests.hpp
 
+    v0.0.11:
+        - declare ADC identity and canonical v0.0.11 validation
+
     v0.0.10:
         - declare ADC identity and canonical v0.0.10 validation
 
@@ -23,7 +26,7 @@
         - declare focused unit tests for ADC parsing, state and TIGR identity
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 #pragma once

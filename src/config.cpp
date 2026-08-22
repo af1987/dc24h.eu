@@ -1,6 +1,9 @@
 /*
     config.cpp
 
+    v0.0.11:
+        - parse bounded password, IP, reconnect and clone protection settings
+
     v0.0.09:
         - load MariaDB credentials from a separate database.cnf file
         - resolve relative database config paths beside the hub config
@@ -15,7 +18,7 @@
         - keep en_US.UTF-8 as baseline locale
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 #include "config.hpp"
@@ -225,6 +228,14 @@ Config load_config(const std::string& path) {
             else if (value == "1") config.dns_lookup = true;
             else throw std::runtime_error("dns_lookup must be 0 or 1");
         }
+        else if (key == "pwd_tmpban") config.anti_abuse.pwd_tmpban = parse_integer<std::uint32_t>(value, key);
+        else if (key == "password_failure_limit") config.anti_abuse.password_failure_limit = parse_integer<std::uint32_t>(value, key);
+        else if (key == "password_failure_window") config.anti_abuse.password_failure_window = parse_integer<std::uint32_t>(value, key);
+        else if (key == "max_users_from_ip") config.anti_abuse.max_users_from_ip = parse_integer<std::size_t>(value, key);
+        else if (key == "reconnect_min_interval") config.anti_abuse.reconnect_min_interval = parse_integer<std::uint32_t>(value, key);
+        else if (key == "clone_detect_count") config.anti_abuse.clone_detect_count = parse_integer<std::size_t>(value, key);
+        else if (key == "clone_det_tban_time") config.anti_abuse.clone_det_tban_time = parse_integer<std::uint32_t>(value, key);
+        else if (key == "clone_ip_tban_time") config.anti_abuse.clone_ip_tban_time = parse_integer<std::uint32_t>(value, key);
         else if (key == "database_config") {
             if (value.empty()) {
                 throw std::runtime_error("database_config must not be empty");
@@ -270,6 +281,23 @@ Config load_config(const std::string& path) {
     }
     if (config.max_clients == 0) {
         throw std::runtime_error("max_clients must be greater than zero");
+    }
+    if (config.anti_abuse.pwd_tmpban == 0U ||
+        config.anti_abuse.pwd_tmpban > 86400U ||
+        config.anti_abuse.password_failure_limit < 2U ||
+        config.anti_abuse.password_failure_limit > 100U ||
+        config.anti_abuse.password_failure_window == 0U ||
+        config.anti_abuse.password_failure_window > 86400U ||
+        config.anti_abuse.max_users_from_ip == 0U ||
+        config.anti_abuse.max_users_from_ip > 65535U ||
+        config.anti_abuse.reconnect_min_interval == 0U ||
+        config.anti_abuse.reconnect_min_interval > 3600U ||
+        config.anti_abuse.clone_detect_count > 65535U ||
+        config.anti_abuse.clone_det_tban_time == 0U ||
+        config.anti_abuse.clone_det_tban_time > 86400U ||
+        config.anti_abuse.clone_ip_tban_time == 0U ||
+        config.anti_abuse.clone_ip_tban_time > 86400U) {
+        throw std::runtime_error("invalid anti-abuse configuration limits");
     }
     if (config.database_config_path.empty() && config.database_password.empty()) {
         throw std::runtime_error("database_password must not be empty");

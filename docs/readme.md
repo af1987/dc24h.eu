@@ -1,6 +1,10 @@
 <!--
 readme.md
 
+v0.0.11:
+  - point to ADR-0015 and the v0.0.11 security release manifest
+  - document Argon2id and active connection-abuse controls
+
 v0.0.10:
   - index tagged password hashing, central RBAC and hostname bans
   - point to ADR-0014 and the v0.0.10 release manifest
@@ -41,12 +45,12 @@ v0.0.01:
   - add documentation index and project baseline
 
 Author: gpt-5.6-sol
-Date: 2026-08-21
+Date: 2026-08-22
 -->
 
 # dc24h.eu documentation
 
-This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.10`.
+This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.11`.
 
 ## Documents
 
@@ -54,7 +58,8 @@ This directory is the authoritative design and operations documentation for `dc2
 - `instructions.md` — permanent engineering, deployment security, versioning, ADR, password-security and C++ pair rules.
 - `changelog.md` — release history.
 - `install.md` — Debian 13 installation, hub-home settings administration, tests, systemd and first-Master bootstrap.
-- `dc24h.eu-v0.0.10.md` — current password, RBAC and hostname-ban release manifest.
+- `dc24h.eu-v0.0.11.md` — current Argon2id and anti-abuse release manifest.
+- `dc24h.eu-v0.0.10.md` — previous password, RBAC and hostname-ban release manifest.
 - `dc24h.eu-v0.0.09.md` — previous per-hub home and settings administration release manifest.
 - `dc24h.eu-v0.0.08.md` — previous kick/ban release manifest and command table.
 - `dc24h.eu-v0.0.07.md` — previous policy/account-key manifest.
@@ -80,14 +85,14 @@ This directory is the authoritative design and operations documentation for `dc2
 - Configuration: non-secret `dc24h.conf` plus protected `database.cnf`
 - Installer secret input: hidden prompt or root-owned mode-`0600` file on a
   clean install; automatic credential reuse without rotation on reinstall
-- Author/date: `gpt-5.6-sol`, `2026-08-21`
+- Author/date: `gpt-5.6-sol`, `2026-08-22`
 
 ## Current account profile
 
 Canonical numeric classes are `-1, 0, 1, 2, 3, 4, 5, 10`. New passwords use
-tagged MD5 by the v0.0.10 compatibility requirement; verification also accepts
-the existing tagged PBKDF2-HMAC-SHA256 format. MD5 is not recommended for
-secure password storage. An account may intentionally have `NULL`
+salted Argon2id. Tagged MD5 and PBKDF2-HMAC-SHA256 records are read-only
+compatibility inputs and are upgraded after successful verification. An
+account may intentionally have `NULL`
 `password_hash` until its first password is assigned.
 
 Supported protected commands:
@@ -120,3 +125,8 @@ adds exact/wildcard reverse-hostname bans. See `dc24h.eu-v0.0.10.md` and
 ADR-0014. Release checks passed for password/RBAC/host matchers, repeated schema
 migration, the active systemd unit and real `ncdc` ADC/TIGR echo/reconnect.
 GitHub CI remains the final gate for PR #10.
+
+v0.0.11 supersedes the MD5 write decision with Argon2id and activates
+temporary password-failure bans, account IP authorization, per-IP connection
+limits, reconnect throttling and configurable clone detection. See
+`dc24h.eu-v0.0.11.md` and ADR-0015.

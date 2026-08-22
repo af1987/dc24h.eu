@@ -1,6 +1,9 @@
 /*
     database.cpp
 
+    v0.0.11:
+        - upgrade successfully verified legacy password hashes to Argon2id
+
     - MariaDB persistence implementation
 
         v0.0.10:
@@ -50,7 +53,7 @@
             - record connect/disconnect events with escaped values
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 // ----------------------------------// DECLARATION //--
@@ -671,7 +674,17 @@ bool Database::verify_user_password(std::string_view username,
     const std::string encoded =
         row != nullptr && row[0] != nullptr ? row[0] : std::string{};
     mysql_free_result(result);
-    return !encoded.empty() && verify_password(password, encoded);
+    if (encoded.empty() || !verify_password(password, encoded)) {
+        return false;
+    }
+    if (password_hash_needs_upgrade(encoded)) {
+        const auto upgraded = escape_locked(hash_password(password));
+        execute_locked(
+            "UPDATE accounts SET password_hash='" + upgraded +
+            "' WHERE nick='" + username_sql +
+            "' AND password_hash='" + escape_locked(encoded) + "'");
+    }
+    return true;
 }
 
 std::vector<UserListEntry> Database::users_by_class(UserClass user_class) {

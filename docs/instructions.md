@@ -1,6 +1,10 @@
 <!--
 instructions.md
 
+v0.0.11:
+  - require Argon2id writes and login-time upgrade of legacy hashes
+  - require active password, IP, reconnect and clone abuse controls
+
 v0.0.10:
   - require tagged MD5 defaults with PBKDF2 verification compatibility
   - require centralized deny-by-default RBAC on every parsed command
@@ -45,12 +49,12 @@ v0.0.01:
   - define mandatory project, versioning, ADR and paired C++ file rules
 
 Author: gpt-5.6-sol
-Date: 2026-08-21
+Date: 2026-08-22
 -->
 
 # Engineering instructions
 
-These rules apply to `dc24h.eu-v0.0.10` and later changes.
+These rules apply to `dc24h.eu-v0.0.11` and later changes.
 
 ## Mandatory baseline
 
@@ -82,12 +86,20 @@ These rules apply to `dc24h.eu-v0.0.10` and later changes.
 
 Canonical numeric classes are `-1, 0, 1, 2, 3, 4, 5, 10`. Other class values must be rejected.
 
-Passwords must never be stored in plaintext. New writes use the explicitly
-requested tagged `md5$<hex>` default. Verification must accept both tagged MD5
-and existing tagged PBKDF2-HMAC-SHA256 values, use constant-time digest
-comparison and reject malformed or untagged values. MD5 is a compatibility
-mechanism and must be documented as unsuitable for secure modern password
-storage; explicit PBKDF2 generation remains supported.
+Passwords must never be stored in plaintext. New writes must use Argon2id with
+at least `m=19456 KiB`, `t=2`, `p=1` and a unique random salt. Tagged MD5 and
+PBKDF2-HMAC-SHA256 records may be verified only for compatibility and must be
+conditionally replaced by Argon2id after a successful check. Malformed or
+untagged records fail closed; no code path may create a new MD5 hash.
+
+Connection admission must call the paired `anti_abuse.cpp` / `anti_abuse.hpp`
+module before expensive database or DNS work. `AddIPTempBan`, `pwd_tmpban` and
+`LoginError` protect the password-check boundary. `mAuthIP` must compare a
+bound account address before NORMAL. `max_users_from_ip` and `CntConnIP` cap
+concurrent source-address sessions. A reconnect inside the configured interval
+must be denied with reason `Reconnecting too fast`. `CheckUserClone` is active
+when `clone_detect_count` is nonzero, must use bounded temporary-ban durations,
+and must release live counts on disconnect.
 
 Every parsed command must pass the central `rbac.cpp` / `rbac.hpp`
 action-to-permission map before execution. Unknown actions, permissions and
@@ -109,7 +121,9 @@ The command semantics are intentionally non-overlapping:
 - `key.user.info.userlist.class=[class]` returns all registered users in the selected class through the private response; `[]` defaults to class `0`, and enabled/password states are marked.
 - Account and moderation command forms remain canonical as documented in
   `docs/dc24h.eu-v0.0.08.md`; v0.0.10 password, RBAC and hostname-ban behavior
-  is documented in `docs/dc24h.eu-v0.0.10.md` and ADR-0014.
+  is documented in `docs/dc24h.eu-v0.0.10.md` and ADR-0014. v0.0.11 Argon2id
+  and anti-abuse behavior is documented in `docs/dc24h.eu-v0.0.11.md` and
+  ADR-0015.
 - Global policy values are validated before storage in MariaDB; unknown keys and malformed values are rejected.
 - `+regme` must enforce configured class, nickname prefix, share and password rules.
 - Passwordless accounts receive a finite first-password deadline.

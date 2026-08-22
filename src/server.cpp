@@ -1,6 +1,11 @@
 /*
     server.cpp
 
+    v0.0.11:
+        - reject temporary bans, excessive per-IP sessions and rapid reconnects
+        - apply mAuthIP during account admission
+        - activate configurable AP/VE clone detection and disconnect accounting
+
     v0.0.10:
         - authorize every parsed command through the central RBAC policy
         - deny commands without an explicit permission mapping
@@ -50,7 +55,7 @@
         - support systemd-friendly graceful shutdown
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 #include "server.hpp"
@@ -98,7 +103,8 @@ Server::Server(const Config& config,
     : config_(config),
       protocol_(protocol),
       database_(database),
-      user_commands_(database) {}
+      user_commands_(database),
+      anti_abuse_(config.anti_abuse) {}
 
 Server::~Server() {
     disconnect_all();
@@ -149,6 +155,20 @@ int Server::run(const std::atomic_bool& stop_requested) {
             address != nullptr ? address : "unknown";
         std::string moderation_hostname;
 
+        if (const auto denied = anti_abuse_.AdmitConnection(remote_address);
+            denied.has_value()) {
+            std::string response = "ISTA 230 " +
+                AdcProtocol::escape_adc(denied->reason);
+            if (denied->retry_after_seconds > 0U) {
+                response += " TL" +
+                    std::to_string(denied->retry_after_seconds);
+            }
+            send_all(client_fd, response + "\n");
+            ::shutdown(client_fd, SHUT_RDWR);
+            ::close(client_fd);
+            continue;
+        }
+
         try {
             std::optional<ModerationEntry> blocked;
             {
@@ -165,6 +185,7 @@ int Server::run(const std::atomic_bool& stop_requested) {
                 send_all(client_fd, moderation_denial(*blocked));
                 ::shutdown(client_fd, SHUT_RDWR);
                 ::close(client_fd);
+                anti_abuse_.RecordDisconnect(remote_address);
                 continue;
             }
         } catch (const std::exception& ex) {
@@ -172,6 +193,7 @@ int Server::run(const std::atomic_bool& stop_requested) {
             send_all(client_fd, "ISTA 500 Moderation\\scheck\\sunavailable\n");
             ::shutdown(client_fd, SHUT_RDWR);
             ::close(client_fd);
+            anti_abuse_.RecordDisconnect(remote_address);
             continue;
         }
 
@@ -182,6 +204,7 @@ int Server::run(const std::atomic_bool& stop_requested) {
                 send_all(client_fd, "ISTA 211 Hub\\sfull\n");
                 ::shutdown(client_fd, SHUT_RDWR);
                 ::close(client_fd);
+                anti_abuse_.RecordDisconnect(remote_address);
                 continue;
             }
 
@@ -326,18 +349,21 @@ void Server::client_loop(int client_fd,
 
     bool was_normal = false;
     std::optional<std::string> disconnected_username;
+    std::string clone_fingerprint;
     {
         std::lock_guard lock(clients_mutex_);
         const auto it = clients_.find(client_fd);
         if (it != clients_.end()) {
             was_normal = it->second.normal;
             disconnected_username = client_username(it->second);
+            clone_fingerprint = it->second.clone_fingerprint;
             clients_.erase(it);
         }
     }
 
     ::shutdown(client_fd, SHUT_RDWR);
     ::close(client_fd);
+    anti_abuse_.RecordDisconnect(remote_address, clone_fingerprint);
 
     try {
         database_.record_event(sid, "disconnect", remote_address);
@@ -416,7 +442,7 @@ bool Server::finish_identification(
             send_all(client_fd, "ISTA 226 Account\\sdisabled\n");
             return false;
         }
-        if (!policy.auth_ip.empty() && policy.auth_ip != remote_address) {
+        if (!mAuthIP(policy.auth_ip, remote_address)) {
             send_all(client_fd, "ISTA 227 Account\\sIP\\smismatch\n");
             return false;
         }
@@ -429,6 +455,23 @@ bool Server::finish_identification(
         std::cerr << "database policy error: " << ex.what() << '\n';
         send_all(client_fd, "ISTA 500 Database\\spolicy\\serror\n");
         return false;
+    }
+
+    std::string clone_fingerprint;
+    for (const auto& [name, value] : fields) {
+        if (name == "AP") clone_fingerprint += "AP=" + value + ";";
+        if (name == "VE") clone_fingerprint += "VE=" + value + ";";
+    }
+    if (!clone_fingerprint.empty() &&
+        anti_abuse_.CheckUserClone(remote_address, clone_fingerprint)) {
+        send_all(client_fd, "ISTA 230 Clone\\sdetection\\slimit\\sexceeded\n");
+        return false;
+    }
+    if (!clone_fingerprint.empty()) {
+        std::lock_guard lock(clients_mutex_);
+        const auto current = clients_.find(client_fd);
+        if (current == clients_.end()) return false;
+        current->second.clone_fingerprint = clone_fingerprint;
     }
 
     {

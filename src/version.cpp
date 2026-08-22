@@ -3,6 +3,10 @@
 
     - canonical runtime version metadata
 
+        v0.0.11:
+            - set program version and release name to dc24h.eu-v0.0.11
+            - set provenance to gpt-5.6-sol / 2026-08-22
+
         v0.0.10:
             - set program version and release name to dc24h.eu-v0.0.10
             - retain gpt-5.6-sol / 2026-08-21 provenance
@@ -47,7 +51,7 @@
             - implement canonical program, release and author metadata
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 // ----------------------------------// DECLARATION //--
@@ -61,11 +65,11 @@ std::string_view program_name() noexcept {
 }
 
 std::string_view version() noexcept {
-    return "0.0.10";
+    return "0.0.11";
 }
 
 std::string_view release_name() noexcept {
-    return "dc24h.eu-v0.0.10";
+    return "dc24h.eu-v0.0.11";
 }
 
 std::string_view project_author() noexcept {
@@ -73,7 +77,7 @@ std::string_view project_author() noexcept {
 }
 
 std::string_view project_date() noexcept {
-    return "2026-08-21";
+    return "2026-08-22";
 }
 
 }  // namespace dc24h

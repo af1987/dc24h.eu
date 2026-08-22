@@ -1,6 +1,10 @@
 #!/bin/bash
 # install.sh
 #
+# v0.0.11:
+#   - install Argon2id and anti-abuse support for dc24h.eu-v0.0.11
+#   - retain protected MariaDB, systemd and per-hub-home deployment
+#
 # v0.0.10:
 #   - install dc24h.eu-v0.0.10 artifacts and generated file metadata
 #   - retain protected credentials, schema migration and service checks
@@ -22,7 +26,7 @@
 #   - build/install dc24h.eu and enable systemd service
 #
 # Author: gpt-5.6-sol
-# Date: 2026-08-21
+# Date: 2026-08-22
 
 set -euo pipefail
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -159,6 +163,7 @@ apt-get install -y \
     pkg-config \
     libmariadb-dev \
     libgcrypt20-dev \
+    libargon2-dev \
     mariadb-server \
     locales \
     shellcheck
@@ -227,7 +232,7 @@ if [[ ! "${database_password}" =~ ^[A-Za-z0-9._-]{16,128}$ ]]; then
 fi
 
 add_runtime_history=0
-if ! grep -q '^# v0\.0\.09:' "${runtime_source}"; then
+if ! grep -q '^# v0\.0\.11:' "${runtime_source}"; then
     add_runtime_history=1
 fi
 
@@ -236,20 +241,38 @@ awk -v add_history="${add_runtime_history}" '
         if (add_history == 1) {
             print "# dc24h.conf"
             print "#"
-            print "# v0.0.10:"
-            print "#   - migrate runtime configuration to the protected hub home"
+            print "# v0.0.11:"
+            print "#   - migrate runtime configuration with active anti-abuse defaults"
             print "#   - reference protected database.cnf credentials"
             print "#"
             print "# Author: gpt-5.6-sol"
-            print "# Date: 2026-08-21"
+            print "# Date: 2026-08-22"
             print ""
         }
     }
     /^[[:space:]]*database_(config|host|port|name|user|password)[[:space:]]*=/ {
         next
     }
+    /^[[:space:]]*pwd_tmpban[[:space:]]*=/ { have_pwd_tmpban=1 }
+    /^[[:space:]]*password_failure_limit[[:space:]]*=/ { have_failure_limit=1 }
+    /^[[:space:]]*password_failure_window[[:space:]]*=/ { have_failure_window=1 }
+    /^[[:space:]]*max_users_from_ip[[:space:]]*=/ { have_ip_limit=1 }
+    /^[[:space:]]*reconnect_min_interval[[:space:]]*=/ { have_reconnect=1 }
+    /^[[:space:]]*clone_detect_count[[:space:]]*=/ { have_clone_count=1 }
+    /^[[:space:]]*clone_det_tban_time[[:space:]]*=/ { have_clone_window=1 }
+    /^[[:space:]]*clone_ip_tban_time[[:space:]]*=/ { have_clone_ban=1 }
     { print }
-    END { print "database_config=database.cnf" }
+    END {
+        if (!have_pwd_tmpban) print "pwd_tmpban=900"
+        if (!have_failure_limit) print "password_failure_limit=5"
+        if (!have_failure_window) print "password_failure_window=300"
+        if (!have_ip_limit) print "max_users_from_ip=10"
+        if (!have_reconnect) print "reconnect_min_interval=2"
+        if (!have_clone_count) print "clone_detect_count=3"
+        if (!have_clone_window) print "clone_det_tban_time=600"
+        if (!have_clone_ban) print "clone_ip_tban_time=900"
+        print "database_config=database.cnf"
+    }
 ' "${runtime_source}" > "${temporary_runtime}"
 
 if [[ -f "${database_config}" ]]; then
@@ -258,11 +281,11 @@ else
     {
         printf '%s\n' '# database.cnf'
         printf '%s\n' '#'
-        printf '%s\n' '# v0.0.10:'
+        printf '%s\n' '# v0.0.11:'
         printf '%s\n' '#   - install protected MariaDB client credentials for this hub home'
         printf '%s\n' '#'
         printf '%s\n' '# Author: gpt-5.6-sol'
-        printf '%s\n' '# Date: 2026-08-21'
+        printf '%s\n' '# Date: 2026-08-22'
         printf '\n[client]\n'
         printf 'protocol=tcp\n'
         printf 'host=127.0.0.1\n'
@@ -327,7 +350,7 @@ systemctl is-active --quiet dc24h.service
 
 reject_symlink "/etc/dc24h.eu"
 install -d -o root -g root -m 0755 "/etc/dc24h.eu"
-legacy_staging_directory="$(mktemp -d /etc/dc24h.eu/.v0.0.10-link.XXXXXX)"
+legacy_staging_directory="$(mktemp -d /etc/dc24h.eu/.v0.0.11-link.XXXXXX)"
 ln -s -- "${runtime_config}" "${legacy_staging_directory}/dc24h.conf"
 mv -fT -- "${legacy_staging_directory}/dc24h.conf" "${legacy_config}"
 rmdir -- "${legacy_staging_directory}"

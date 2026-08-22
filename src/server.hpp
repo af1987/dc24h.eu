@@ -1,6 +1,10 @@
 /*
     server.hpp
 
+    v0.0.11:
+        - enforce AntiAbuse admission, reconnect, clone and IP-count controls
+        - retain the clone fingerprint until disconnect accounting completes
+
     v0.0.10:
         - apply central RBAC to each parsed user command
         - retain reverse hostnames only when active host bans require them
@@ -41,12 +45,13 @@
         - add graceful shutdown contract for systemd SIGTERM
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 #pragma once
 
 #include "adc.hpp"
+#include "anti_abuse.hpp"
 #include "config.hpp"
 #include "database.hpp"
 #include "rbac.hpp"
@@ -81,6 +86,7 @@ private:
         std::string sid;
         std::string remote_address;
         std::string moderation_hostname;
+        std::string clone_fingerprint;
         bool normal{false};
         std::map<std::string, std::string> inf_fields;
         std::unordered_set<std::string> features;
@@ -148,6 +154,7 @@ private:
     const AdcProtocol& protocol_;
     Database& database_;
     UserCommandProcessor user_commands_;
+    AntiAbuse anti_abuse_;
 
     std::atomic<std::uint32_t> sid_counter_{1};
     std::mutex moderation_mutex_;

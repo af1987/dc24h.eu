@@ -1,5 +1,8 @@
 # dc24h.conf.example
 #
+# v0.0.11:
+#   - enable password, IP connection, reconnect and clone protections
+#
 # v0.0.09:
 #   - move MariaDB credentials into a protected database.cnf beside this file
 #   - add a relative database_config reference for per-hub home deployment
@@ -13,7 +16,7 @@
 #   - add MariaDB connection settings
 #
 # Author: gpt-5.6-sol
-# Date: 2026-08-21
+# Date: 2026-08-22
 
 hub_name=dc24h.eu
 hub_description=dc24h.eu Direct Connect ADC Hub
@@ -22,5 +25,15 @@ listen_port=1511
 max_clients=1024
 locale=en_US.UTF-8
 dns_lookup=0
+
+# Anti-abuse (seconds unless the key is a count)
+pwd_tmpban=900
+password_failure_limit=5
+password_failure_window=300
+max_users_from_ip=10
+reconnect_min_interval=2
+clone_detect_count=3
+clone_det_tban_time=600
+clone_ip_tban_time=900
 
 database_config=database.cnf

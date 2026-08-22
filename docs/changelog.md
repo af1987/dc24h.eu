@@ -1,6 +1,10 @@
 <!--
 changelog.md
 
+v0.0.11:
+  - replace new MD5 writes with Argon2id and legacy hash upgrades
+  - add active password, IP, reconnect and clone abuse protections
+
 v0.0.10:
   - add tagged password hashing, central RBAC and hostname bans
   - record compatibility and security boundaries for MD5/reverse DNS
@@ -34,10 +38,49 @@ v0.0.01:
   - start release history with dc24h.eu-v0.0.01
 
 Author: gpt-5.6-sol
-Date: 2026-08-21
+Date: 2026-08-22
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.11 — 2026-08-22
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- Paired `anti_abuse.cpp` / `anti_abuse.hpp` module with `AddIPTempBan`,
+  `LoginError`, `CntConnIP`, `mAuthIP` and `CheckUserClone` controls.
+- Bounded runtime configuration for password-failure windows and bans,
+  per-address session limits, reconnect delay and clone detection/bans.
+- Focused anti-abuse CTest target and ADR-0015.
+
+### Changed
+
+- Raised runtime, CMake, systemd, documentation and test metadata to `0.0.11`.
+- New password hashes use Argon2id with `m=19456 KiB`, `t=2`, `p=1` and a
+  random 16-byte salt. Successful verification conditionally upgrades tagged
+  legacy MD5 or PBKDF2 records.
+- Admission checks temporary bans and per-IP limits before database/DNS work,
+  checks `mAuthIP` and AP/VE clone count before NORMAL, and releases counters
+  on disconnect.
+
+### Security
+
+- No new MD5 password hash can be generated; legacy support is read-only.
+- Password throttling uses separate account and IP windows, avoiding a single
+  combined key that would permit credential-stuffing sweeps.
+- Reconnect throttling uses a monotonic clock and the generic reason
+  `Reconnecting too fast`; temporary ban responses do not expose counters.
+
+### Validation
+
+- Debian 13 warnings-as-errors Release build and CTest passed 9/9.
+- MariaDB retained 30 settings; the installed systemd unit remained active at
+  exposure score 3.0.
+- Real `ncdc 1.23.1` echoed the release marker, reconnected after service
+  restart and echoed the post-restart marker.
+- File-history/pair, forbidden-name and remote CI checks remain final gates.
 
 ## dc24h.eu-v0.0.10 — 2026-08-21
 
