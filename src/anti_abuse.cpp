@@ -1,6 +1,10 @@
 /*
     anti_abuse.cpp
 
+    v0.0.13:
+        - apply typed eBT_FLOOD and eBT_PASSW temporary bans
+        - enforce a bounded sliding protocol-flood window per source IP
+
     v0.0.11:
         - implement AddIPTempBan(), pwd_tmpban and LoginError() protection
         - implement max_users_from_ip, CntConnIP() and reconnect throttling
@@ -31,7 +35,10 @@ AntiAbuse::AntiAbuse(AntiAbuseSettings settings) : settings_(settings) {
         settings_.max_users_from_ip == 0U ||
         settings_.reconnect_min_interval == 0U ||
         settings_.clone_det_tban_time == 0U ||
-        settings_.clone_ip_tban_time == 0U) {
+        settings_.clone_ip_tban_time == 0U ||
+        settings_.protocol_flood_limit == 0U ||
+        settings_.protocol_flood_window == 0U ||
+        settings_.protocol_flood_tmpban == 0U) {
         throw std::invalid_argument("anti-abuse limits must be greater than zero");
     }
 }
@@ -39,11 +46,24 @@ AntiAbuse::AntiAbuse(AntiAbuseSettings settings) : settings_(settings) {
 void AntiAbuse::add_ip_temp_ban_locked(std::string_view address,
                                        std::uint32_t seconds,
                                        std::string_view reason,
+                                       BanType type,
                                        TimePoint now) {
     const auto expiry = now + std::chrono::seconds(seconds);
     auto& ban = temp_bans_[std::string(address)];
     if (ban.expires_at < expiry) ban.expires_at = expiry;
     ban.reason = std::string(reason);
+    ban.type = type;
+}
+
+std::string_view AntiAbuse::ban_reason(BanType type) noexcept {
+    switch (type) {
+        case eBT_FLOOD: return "Protocol flood limit exceeded";
+        case eBT_PASSW: return "Too many authentication failures";
+        case eBT_CLONE: return "Clone detection limit exceeded";
+        case eBT_RECONNECT: return "Reconnecting too fast";
+        case eBT_MANUAL: return "Temporary IP ban";
+    }
+    return "Temporary IP ban";
 }
 
 void AntiAbuse::AddIPTempBan(std::string_view address,
@@ -55,7 +75,20 @@ void AntiAbuse::AddIPTempBan(std::string_view address,
     }
     std::lock_guard lock(mutex_);
     cleanup_locked(now);
-    add_ip_temp_ban_locked(address, seconds, reason, now);
+    add_ip_temp_ban_locked(address, seconds, reason, eBT_MANUAL, now);
+}
+
+void AntiAbuse::AddIPTempBan(std::string_view address,
+                             std::uint32_t seconds,
+                             BanType type,
+                             TimePoint now) {
+    if (address.empty() || seconds == 0U) {
+        throw std::invalid_argument(
+            "temporary IP ban requires address and duration");
+    }
+    std::lock_guard lock(mutex_);
+    cleanup_locked(now);
+    add_ip_temp_ban_locked(address, seconds, ban_reason(type), type, now);
 }
 
 void AntiAbuse::cleanup_failures_locked(std::deque<TimePoint>& failures,
@@ -91,6 +124,16 @@ void AntiAbuse::cleanup_locked(TimePoint now) {
         if (it->second.empty()) it = account_failures_.erase(it);
         else ++it;
     }
+    const auto protocol_cutoff = now -
+        std::chrono::seconds(settings_.protocol_flood_window);
+    for (auto it = protocol_events_.begin(); it != protocol_events_.end();) {
+        auto& events = it->second;
+        while (!events.empty() && events.front() <= protocol_cutoff) {
+            events.pop_front();
+        }
+        if (events.empty()) it = protocol_events_.erase(it);
+        else ++it;
+    }
 }
 
 bool AntiAbuse::LoginError(std::string_view address,
@@ -119,7 +162,7 @@ bool AntiAbuse::LoginError(std::string_view address,
         return false;
     }
     add_ip_temp_ban_locked(
-        address, settings_.pwd_tmpban, "Too many failed password attempts", now);
+        address, settings_.pwd_tmpban, ban_reason(eBT_PASSW), eBT_PASSW, now);
     ip.clear();
     return true;
 }
@@ -148,7 +191,8 @@ std::optional<AdmissionDenial> AntiAbuse::ActiveTempBan(
         it->second.expires_at - now);
     return AdmissionDenial{
         it->second.reason,
-        static_cast<std::uint32_t>(std::max<std::int64_t>(1, remaining.count()))};
+        static_cast<std::uint32_t>(std::max<std::int64_t>(1, remaining.count())),
+        it->second.type};
 }
 
 std::optional<AdmissionDenial> AntiAbuse::AdmitConnection(
@@ -163,7 +207,8 @@ std::optional<AdmissionDenial> AntiAbuse::AdmitConnection(
             ban->second.expires_at - now);
         return AdmissionDenial{
             ban->second.reason,
-            static_cast<std::uint32_t>(std::max<std::int64_t>(1, remaining.count()))};
+            static_cast<std::uint32_t>(std::max<std::int64_t>(1, remaining.count())),
+            ban->second.type};
     }
 
     const auto disconnected = last_disconnect_.find(std::string(address));
@@ -173,14 +218,17 @@ std::optional<AdmissionDenial> AntiAbuse::AdmitConnection(
         add_ip_temp_ban_locked(address,
                                settings_.reconnect_min_interval,
                                "Reconnecting too fast",
+                               eBT_RECONNECT,
                                now);
         return AdmissionDenial{
-            "Reconnecting too fast", settings_.reconnect_min_interval};
+            "Reconnecting too fast", settings_.reconnect_min_interval,
+            eBT_RECONNECT};
     }
 
     auto& count = connections_by_ip_[std::string(address)];
     if (count >= settings_.max_users_from_ip) {
-        return AdmissionDenial{"Too many connections from this IP", 0U};
+        return AdmissionDenial{
+            "Too many connections from this IP", 0U, eBT_FLOOD};
     }
     ++count;
     return std::nullopt;
@@ -205,12 +253,42 @@ bool AntiAbuse::CheckUserClone(std::string_view address,
         add_ip_temp_ban_locked(address,
                                settings_.clone_ip_tban_time,
                                "Clone detection limit exceeded",
+                               eBT_CLONE,
                                now);
         return true;
     }
     ++count;
     clone_last_seen_[key] = now;
     return false;
+}
+
+bool AntiAbuse::CheckProtocolFlood(std::string_view address,
+                                   TimePoint now) {
+    if (address.empty()) return false;
+    std::lock_guard lock(mutex_);
+    cleanup_locked(now);
+    constexpr std::size_t maximum_protocol_keys = 65536U;
+    const auto address_key = std::string(address);
+    if (!protocol_events_.contains(address_key) &&
+        protocol_events_.size() >= maximum_protocol_keys) {
+        protocol_events_.erase(protocol_events_.begin());
+    }
+    auto& events = protocol_events_[address_key];
+    const auto cutoff = now -
+        std::chrono::seconds(settings_.protocol_flood_window);
+    while (!events.empty() && events.front() <= cutoff) {
+        events.pop_front();
+    }
+    events.push_back(now);
+    if (events.size() <= settings_.protocol_flood_limit) return false;
+
+    add_ip_temp_ban_locked(address,
+                           settings_.protocol_flood_tmpban,
+                           ban_reason(eBT_FLOOD),
+                           eBT_FLOOD,
+                           now);
+    events.clear();
+    return true;
 }
 
 void AntiAbuse::RecordDisconnect(std::string_view address,

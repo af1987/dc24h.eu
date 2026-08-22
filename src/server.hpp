@@ -1,6 +1,9 @@
 /*
     server.hpp
 
+    v0.0.13:
+        - retain typed protocol/authentication anti-abuse integration
+
     v0.0.12:
         - declare parallel ADC/ADCS listeners and TLS-only operation
         - use bounded transports, ReadLineLocal and phase timeouts

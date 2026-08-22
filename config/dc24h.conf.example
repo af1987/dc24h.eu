@@ -1,5 +1,8 @@
 # dc24h.conf.example
 #
+# v0.0.13:
+#   - add active protocol flood window and typed temporary-ban duration
+#
 # v0.0.12:
 #   - add ADCS/TLS 1.3 and optional TLS-only mode
 #   - add hard line/output limits and phase timeouts
@@ -39,6 +42,9 @@ reconnect_min_interval=2
 clone_detect_count=3
 clone_det_tban_time=600
 clone_ip_tban_time=900
+protocol_flood_limit=120
+protocol_flood_window=10
+protocol_flood_tmpban=300
 
 # ADCS/TLS. Replace the installation certificate with a trusted certificate.
 tls_enabled=1

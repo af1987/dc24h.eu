@@ -1,6 +1,10 @@
 /*
     adc_tests.cpp
 
+    v0.0.13:
+        - verify syntax/length/login-order guards and explicit login flags
+        - verify canonical 0.0.13 release metadata
+
     v0.0.12:
         - verify canonical 0.0.12 release metadata
 
@@ -71,6 +75,9 @@ void run_protocol_tests() {
                              "127.0.0.1",
                              session);
     assert(session.state == AdcState::identify);
+    assert(AdcProtocol::has_login_flag(
+        session, LoginFlag::protocol_validated));
+    assert(!AdcProtocol::has_login_flag(session, LoginFlag::normal));
     assert(handshake.direct_messages.size() == 3U);
     assert(handshake.direct_messages[0] == "ISUP ADTIGR ADBASE\n");
     assert(handshake.direct_messages[1] == "ISID AAAB\n");
@@ -85,6 +92,9 @@ void run_protocol_tests() {
             "127.0.0.1",
             session);
     assert(session.state == AdcState::normal);
+    assert(AdcProtocol::has_login_flag(
+        session, LoginFlag::identity_validated));
+    assert(AdcProtocol::has_login_flag(session, LoginFlag::normal));
     assert(identify.became_normal);
     assert(identify.inf_update);
     assert(identify.routed_message.find(" PD") == std::string::npos);
@@ -141,17 +151,31 @@ void run_protocol_tests() {
         "AAAC", "127.0.0.1", ncdc_session);
     assert(ncdc_identify.became_normal);
     assert(!ncdc_identify.disconnect);
+
+    assert(AdcProtocol::CheckProtoSyntax("HSUP ADBASE ADTIGR"));
+    assert(!AdcProtocol::CheckProtoSyntax("HSUP  ADBASE"));
+    assert(!AdcProtocol::CheckProtoSyntax("HSUP ADUNKNOWN\\x"));
+    assert(AdcProtocol::CheckProtoLen("HSUP", 4U));
+    assert(!AdcProtocol::CheckProtoLen("HSUP", 3U));
+    assert(!AdcProtocol::CheckProtoLen({}, 4U));
+
+    AdcSession wrong_order;
+    assert(!AdcProtocol::CheckUserLogin(
+        "BINF AAAB NItester", wrong_order));
+    const auto rejected_order = protocol.handle_line(
+        "BINF AAAB NItester", "AAAB", "127.0.0.1", wrong_order);
+    assert(rejected_order.disconnect);
 }
 
 }  // namespace dc24h::tests
 
 int main() {
-    assert(dc24h::version() == "0.0.12");
-    assert(dc24h::release_name() == "dc24h.eu-v0.0.12");
+    assert(dc24h::version() == "0.0.13");
+    assert(dc24h::release_name() == "dc24h.eu-v0.0.13");
     assert(dc24h::project_author() == "gpt-5.6-sol");
     assert(dc24h::project_date() == "2026-08-22");
     dc24h::tests::run_hash_tests();
     dc24h::tests::run_protocol_tests();
-    std::cout << "dc24h.eu v0.0.12 tests passed\n";
+    std::cout << "dc24h.eu v0.0.13 tests passed\n";
     return 0;
 }

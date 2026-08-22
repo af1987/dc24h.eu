@@ -1,6 +1,11 @@
 <!--
 instructions.md
 
+v0.0.13:
+  - require ADC syntax/length/order validation and explicit login flags
+  - require typed flood/auth temporary bans and document the NMDC exclusion
+  - centralize legacy SQL escaping and prefer prepared statements
+
 v0.0.12:
   - require TLS policy, optional TLS-only mode and protected key material
   - require hard I/O ceilings and all named ADC connection timeouts
@@ -59,7 +64,7 @@ Date: 2026-08-22
 
 # Engineering instructions
 
-These rules apply to `dc24h.eu-v0.0.12` and later changes.
+These rules apply to `dc24h.eu-v0.0.13` and later changes.
 
 ## Mandatory baseline
 
@@ -88,6 +93,13 @@ These rules apply to `dc24h.eu-v0.0.12` and later changes.
 - BASE/TIGR are mandatory in SUP negotiation and TIGR PID/CID verification; do not require clients to repeat them in BINF `SU`.
 - `ncdc` is used only for connection/interoperability tests. Production must
   accept any conforming ADC client, including DC++ and EiskaltDC++ families.
+- Every logical line must pass `CheckProtoLen()`, `CheckProtoSyntax()` and
+  `CheckUserLogin()` before routing, with explicit protocol/identity/NORMAL
+  flags recording successful login stages.
+- Do not add NMDC Lock-to-Key or `Lock2Key()` to the ADC server. ADC
+  BASE/TIGR negotiation and TIGR PID/CID validation are the protocol boundary.
+- Enforce a bounded per-IP protocol window and call
+  `AddIPTempBan(..., eBT_FLOOD)` after its limit is exceeded.
 
 ## Transport security and resource rules
 
@@ -120,7 +132,8 @@ untagged records fail closed; no code path may create a new MD5 hash.
 Connection admission must call the paired `anti_abuse.cpp` / `anti_abuse.hpp`
 module before expensive database or DNS work. `AddIPTempBan`, `pwd_tmpban` and
 `LoginError` protect the password-check boundary. `mAuthIP` must compare a
-bound account address before NORMAL. `max_users_from_ip` and `CntConnIP` cap
+bound account address before NORMAL; its failures must feed the same typed
+`eBT_PASSW` protection window. `max_users_from_ip` and `CntConnIP` cap
 concurrent source-address sessions. A reconnect inside the configured interval
 must be denied with reason `Reconnecting too fast`. `CheckUserClone` is active
 when `clone_detect_count` is nonzero, must use bounded temporary-ban durations,
@@ -149,7 +162,8 @@ The command semantics are intentionally non-overlapping:
   is documented in `docs/dc24h.eu-v0.0.10.md` and ADR-0014. v0.0.11 Argon2id
   and anti-abuse behavior is documented in `docs/dc24h.eu-v0.0.11.md` and
   ADR-0015. v0.0.12 TLS, bounded-I/O and timeout behavior is documented in
-  `docs/dc24h.eu-v0.0.12.md` and ADR-0016.
+  `docs/dc24h.eu-v0.0.12.md` and ADR-0016. v0.0.13 ADC validation and typed-ban
+  behavior is documented in `docs/dc24h.eu-v0.0.13.md` and ADR-0017.
 - Global policy values are validated before storage in MariaDB; unknown keys and malformed values are rejected.
 - `+regme` must enforce configured class, nickname prefix, share and password rules.
 - Passwordless accounts receive a finite first-password deadline.
@@ -254,6 +268,10 @@ Until ADC VERIFY (`GPA`/`PAS`) authenticates registered users, remote nicknames 
   without leaving a partial update.
 - Database-backed setting updates are consumed on the next relevant settings
   lookup. Changes to `dc24h.conf` or `database.cnf` require a service restart.
+- Existing concatenated SQL literals must pass through the connection-aware
+  `Database::WriteStringConstant()` boundary. This is partial protection only;
+  new database APIs should use prepared statements with bound parameters, and
+  migrations away from manual escaping require focused injection tests.
 
 ## File history rule
 

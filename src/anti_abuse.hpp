@@ -1,6 +1,10 @@
 /*
     anti_abuse.hpp
 
+    v0.0.13:
+        - declare typed eBT_FLOOD/eBT_PASSW temporary bans
+        - add a bounded per-IP protocol command-rate window
+
     v0.0.11:
         - declare temporary IP bans and password-failure throttling
         - declare per-IP connection, reconnect and clone protections
@@ -35,11 +39,23 @@ struct AntiAbuseSettings {
     std::size_t clone_detect_count{3};
     std::uint32_t clone_det_tban_time{600};
     std::uint32_t clone_ip_tban_time{900};
+    std::size_t protocol_flood_limit{120};
+    std::uint32_t protocol_flood_window{10};
+    std::uint32_t protocol_flood_tmpban{300};
+};
+
+enum BanType {
+    eBT_FLOOD,
+    eBT_PASSW,
+    eBT_CLONE,
+    eBT_RECONNECT,
+    eBT_MANUAL
 };
 
 struct AdmissionDenial {
     std::string reason;
     std::uint32_t retry_after_seconds{0};
+    BanType type{eBT_MANUAL};
 };
 
 bool mAuthIP(std::string_view authorized_ip,
@@ -55,6 +71,10 @@ public:
     void AddIPTempBan(std::string_view address,
                       std::uint32_t seconds,
                       std::string_view reason,
+                      TimePoint now = Clock::now());
+    void AddIPTempBan(std::string_view address,
+                      std::uint32_t seconds,
+                      BanType type,
                       TimePoint now = Clock::now());
     bool LoginError(std::string_view address,
                     std::string_view username,
@@ -72,6 +92,8 @@ public:
     bool CheckUserClone(std::string_view address,
                         std::string_view clone_fingerprint,
                         TimePoint now = Clock::now());
+    bool CheckProtocolFlood(std::string_view address,
+                            TimePoint now = Clock::now());
 
     std::optional<AdmissionDenial> ActiveTempBan(
         std::string_view address,
@@ -81,6 +103,7 @@ private:
     struct TempBan {
         TimePoint expires_at;
         std::string reason;
+        BanType type{eBT_MANUAL};
     };
 
     void cleanup_failures_locked(std::deque<TimePoint>& failures,
@@ -89,7 +112,9 @@ private:
     void add_ip_temp_ban_locked(std::string_view address,
                                 std::uint32_t seconds,
                                 std::string_view reason,
+                                BanType type,
                                 TimePoint now);
+    static std::string_view ban_reason(BanType type) noexcept;
     static std::string clone_key(std::string_view address,
                                  std::string_view fingerprint);
 
@@ -98,6 +123,7 @@ private:
     std::unordered_map<std::string, TempBan> temp_bans_;
     std::unordered_map<std::string, std::deque<TimePoint>> ip_failures_;
     std::unordered_map<std::string, std::deque<TimePoint>> account_failures_;
+    std::unordered_map<std::string, std::deque<TimePoint>> protocol_events_;
     std::unordered_map<std::string, std::size_t> connections_by_ip_;
     std::unordered_map<std::string, std::size_t> clones_;
     std::unordered_map<std::string, TimePoint> clone_last_seen_;

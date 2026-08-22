@@ -1,6 +1,9 @@
 /*
     anti_abuse_tests.hpp
 
+    v0.0.13:
+        - retain declarations for typed-ban and protocol-flood tests
+
     v0.0.11:
         - declare focused active anti-abuse regression tests
 

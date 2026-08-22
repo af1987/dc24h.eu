@@ -1,6 +1,9 @@
 /*
     database.cpp
 
+    v0.0.13:
+        - centralize context-aware SQL literal escaping in WriteStringConstant()
+
     v0.0.11:
         - upgrade successfully verified legacy password hashes to Argon2id
 
@@ -1735,6 +1738,10 @@ bool Database::has_any_enabled_users() {
 }
 
 std::string Database::escape_locked(std::string_view value) {
+    return WriteStringConstant(value);
+}
+
+std::string Database::WriteStringConstant(std::string_view value) {
     if (connection_ == nullptr) {
         throw std::runtime_error("MariaDB is not connected");
     }

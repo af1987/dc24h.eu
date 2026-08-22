@@ -1,5 +1,8 @@
 # ci.yml
 #
+# v0.0.13:
+#   - retain Debian 13 warnings/test gate for ADC input hardening
+#
 # v0.0.12:
 #   - install OpenSSL headers and test TLS/bounded transports on Debian 13
 #

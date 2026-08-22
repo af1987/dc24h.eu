@@ -1,6 +1,10 @@
 <!--
 install.md
 
+v0.0.13:
+  - install the ADC validation and typed temporary-ban release
+  - document protocol-flood configuration and ncdc test-only verification
+
 v0.0.12:
   - install OpenSSL and protected TLS bootstrap material
   - document ADCS/TLS-only, size limits, timeout and ncdc test procedures
@@ -71,7 +75,7 @@ server, ShellCheck and `en_US.UTF-8` locale support.
 ```bash
 git clone https://github.com/af1987/dc24h.eu.git
 cd dc24h.eu
-git checkout agent/dc24h-v0.0.12
+git checkout agent/dc24h-v0.0.13
 sudo ./scripts/install.sh
 ```
 
@@ -116,7 +120,7 @@ the deployment sequence is:
 ## Installed hub home
 
 The text `nazwa-huba` is a placeholder for one validated instance-name segment;
-it is not a literal directory. The v0.0.12 instance is exactly:
+it is not a literal directory. The v0.0.13 instance is exactly:
 
 `/var/lib/dc24h.eu/dc24h.eu`
 
@@ -154,6 +158,9 @@ reconnect_min_interval=2
 clone_detect_count=3
 clone_det_tban_time=600
 clone_ip_tban_time=900
+protocol_flood_limit=120
+protocol_flood_window=10
+protocol_flood_tmpban=300
 
 tls_enabled=1
 tls_only_mode=0
@@ -482,7 +489,7 @@ sudo journalctl -u dc24h.service -f
 ```bash
 sudo apt-get update
 sudo apt-get install -y build-essential cmake pkg-config libmariadb-dev \
-  libgcrypt20-dev libargon2-dev shellcheck
+  libgcrypt20-dev libargon2-dev libssl-dev openssl shellcheck
 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
@@ -508,17 +515,17 @@ ncdc -c "${GUEST_SESSION_DIR}" -n
 In the first `ncdc` session:
 
 ```text
-/set nick V012Master
-/open dc24h-v012 adc://127.0.0.1:1511/
-/say ncdc-v0.0.12-connection-test
+/set nick V013Master
+/open dc24h-v013 adc://127.0.0.1:1511/
+/say ncdc-v0.0.13-connection-test
 ```
 
 In the second session, use a different persistent client identity:
 
 ```text
-/set nick V012Guest
-/open dc24h-v012 adc://127.0.0.1:1511/
-/say ncdc-v0.0.12-connection-test
+/set nick V013Guest
+/open dc24h-v013 adc://127.0.0.1:1511/
+/say ncdc-v0.0.13-connection-test
 ```
 
 For reproduction, require both clients to complete ADC/TIGR identification,
@@ -528,10 +535,10 @@ isolated release database, also change a setting with
 restore the default, restart `dc24h.service`, reconnect and repeat the echo.
 BASE/TIGR remain negotiated in SUP and TIGR PID/CID validation remains active.
 
-The v0.0.12 release test uses Debian 13 and a real `ncdc` client only as a
+The v0.0.13 release test uses Debian 13 and a real `ncdc` client only as a
 temporary interoperability check. It must complete ADC/TIGR identification and
-echo `ncdc-v0.0.12-connection-test`; after a service restart it must reconnect
-and echo `ncdc-v0.0.12-after-restart`. This does not make ncdc a dependency or
+echo `ncdc-v0.0.13-connection-test`; after a service restart it must reconnect
+and echo `ncdc-v0.0.13-after-restart`. This does not make ncdc a dependency or
 restrict production connections from other ADC clients.
 
 ## TLS and limit validation
@@ -556,15 +563,17 @@ policy. An integration fixture with small limits must also prove that a line
 over `mLineSizeMax` returns fatal status and closes, while an idle pre-login
 connection closes at the configured phase deadline.
 
-## v0.0.12 validation record
+## v0.0.13 validation record
 
 - Warnings-as-errors Release build and all 10 CTest cases passed.
-- TLS 1.3 negotiated successfully, TLS 1.2 was rejected, TLS-only exposed only
-  1512, and the dual-listener policy was restored afterward.
-- A 65536-byte line and an idle 10-second SUP phase both received fatal status
-  and closed. Repeated installation preserved credentials and 30 settings.
-- Real ncdc 1.23.1 completed ADC/ADCS echo and automatic post-restart reconnect;
-  it remains a release test only and is not installed as a service dependency.
+- TLS 1.3 negotiated `TLS_AES_256_GCM_SHA384`; TLS 1.2 was rejected by the
+  configured minimum.
+- An out-of-order BINF received `ISTA 244`; a protocol burst and a 65536-byte
+  line each caused a reconnect-persistent protocol-flood ban.
+- Installation preserved protected inputs, retained 30 settings and activated
+  the v0.0.13 unit.
+- Real ncdc 1.23.1 completed ADC/TIGR echo and automatic post-restart reconnect;
+  it echoed both v0.0.13 markers and remains a test-only dependency.
 - The unit passed verification, remained active and received security exposure
   score `3.0 OK`.
 
@@ -596,7 +605,7 @@ an administrator reset.
 ## Network
 
 The default ADC listener is TCP port `1511`; ADCS/TLS uses `1512` when enabled.
-v0.0.12 remains IPv4-only. `tls_only_mode=1` opens only the encrypted listener.
+v0.0.13 remains IPv4-only. `tls_only_mode=1` opens only the encrypted listener.
 Administrative `!set` paths remain restricted to `127.0.0.1`; `+passwd` and
 explicitly enabled `+regme` are self-service exceptions. The separate local
 settings CLI requires root and the protected hub-home contract.
