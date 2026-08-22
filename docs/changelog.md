@@ -1,6 +1,10 @@
 <!--
 changelog.md
 
+v0.0.13:
+  - add ADC syntax/length/login-order validation and explicit login flags
+  - add typed flood/authentication temporary bans and SQL escaping boundary
+
 v0.0.12:
   - add native TLS 1.3 ADCS and optional TLS-only operation
   - add bounded input/output and phase-specific timeout controls
@@ -46,6 +50,45 @@ Date: 2026-08-22
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.13 — 2026-08-22
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- `CheckProtoSyntax()`, `CheckProtoLen()` and `CheckUserLogin()` at the ADC
+  boundary, plus explicit protocol/identity/NORMAL completion flags.
+- Per-IP sliding protocol command windows configured by
+  `protocol_flood_limit`, `protocol_flood_window` and
+  `protocol_flood_tmpban`.
+- Typed temporary-ban reasons `eBT_FLOOD` and `eBT_PASSW`, focused regression
+  tests, ADR-0017 and the v0.0.13 release manifest.
+
+### Changed
+
+- Raised runtime, CMake, systemd, documentation and test metadata to `0.0.13`.
+- Authorization IP mismatches now feed the authentication-failure window.
+- MariaDB literal escaping is centralized through
+  `Database::WriteStringConstant()`; prepared statements remain preferred for
+  new database operations.
+- The installer migrates the three protocol-flood defaults without changing
+  existing MariaDB credentials or hub settings.
+
+### Security
+
+- Invalid UTF-8, ADC escapes, header syntax, line length and login order fail
+  before routing or persistence.
+- Rate-limit overflow calls `AddIPTempBan(..., eBT_FLOOD)`; password and bound
+  address failures use `eBT_PASSW`.
+- NMDC Lock-to-Key is deliberately not implemented because this is an ADC-only
+  hub; BASE/TIGR negotiation and TIGR PID/CID verification remain mandatory.
+
+### Validation
+
+- Warnings-as-errors Release build and CTest passed 10/10 locally.
+- Shell syntax, ShellCheck, file-pair/history and forbidden-name checks are
+  required before merge; runtime and ncdc results are in the release manifest.
 
 ## dc24h.eu-v0.0.12 — 2026-08-22
 

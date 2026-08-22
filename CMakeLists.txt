@@ -1,5 +1,9 @@
 # CMakeLists.txt
 #
+# v0.0.13:
+#   - raise CMake project version to 0.0.13
+#   - link bounded-length validation into the ADC protocol test target
+#
 # v0.0.12:
 #   - raise CMake project version to 0.0.12
 #   - add configurable TLS proxy features, OpenSSL and transport tests
@@ -60,7 +64,7 @@
 
 cmake_minimum_required(VERSION 3.25)
 
-project(dc24h VERSION 0.0.12 LANGUAGES CXX)
+project(dc24h VERSION 0.0.13 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -178,6 +182,8 @@ if(BUILD_TESTING)
         src/version.hpp
         src/hash.cpp
         src/hash.hpp
+        src/io_limits.cpp
+        src/io_limits.hpp
         src/adc.cpp
         src/adc.hpp
     )

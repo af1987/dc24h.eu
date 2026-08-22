@@ -1,6 +1,11 @@
 <!--
 README.md
 
+v0.0.13:
+  - raise project description to dc24h.eu-v0.0.13
+  - add ADC syntax/length/order guards and explicit login flags
+  - add typed protocol-flood and authentication temporary bans
+
 v0.0.12:
   - raise project description to dc24h.eu-v0.0.12
   - add TLS 1.3 ADCS, optional TLS-only mode and bounded transports
@@ -59,7 +64,7 @@ Date: 2026-08-22
 
 # dc24h.eu
 
-`dc24h.eu-v0.0.12` is a C++20 Direct Connect ADC hub for Debian 13.
+`dc24h.eu-v0.0.13` is a C++20 Direct Connect ADC hub for Debian 13.
 
 ## Baseline
 
@@ -163,7 +168,26 @@ counters, account IP authorization (`mAuthIP`), per-IP session limits
 (`max_users_from_ip`, `CntConnIP`), reconnect throttling with reason
 `Reconnecting too fast`, and configurable client clone detection
 (`CheckUserClone`, `clone_detect_count`, `clone_det_tban_time`,
-`clone_ip_tban_time`). Defaults are active in `dc24h.conf.example`.
+`clone_ip_tban_time`). v0.0.13 adds `CheckProtocolFlood()` with a sliding
+per-IP command window and typed `eBT_FLOOD`/`eBT_PASSW` temporary bans.
+Defaults are active in `dc24h.conf.example`.
+
+## ADC input and SQL boundaries
+
+Every logical line passes `CheckProtoLen()`, `CheckProtoSyntax()` and
+`CheckUserLogin()` before routing. The checks enforce the configured and hard
+length ceilings, strict UTF-8/ADC escapes/header token syntax, and the
+`PROTOCOL -> IDENTIFY -> NORMAL` order recorded by explicit login flags.
+Malformed or out-of-order input fails closed.
+
+This ADC-only design does not implement the NMDC Lock-to-Key exchange. TIGR
+PID/CID verification and BASE/TIGR negotiation are the ADC identity boundary;
+adding a legacy NMDC `Lock2Key()` path would mix incompatible protocols.
+
+MariaDB string literals are centralized through
+`Database::WriteStringConstant()` and Connector/C context-aware escaping.
+This is partial protection: prepared statements remain the preferred design
+for new queries and future migration of existing statements.
 
 ## TLS and bounded connections
 
@@ -192,12 +216,12 @@ the stronger network boundary because reverse DNS is not authenticated.
 
 The management trust boundary remains loopback-only (`127.0.0.1`) because ADC VERIFY (`GPA`/`PAS`) is not implemented. Timed policies persist in MariaDB with UTC expiry and are enforced before ADC routing. Delegated registration is capped at class 1.
 
-The v0.0.12 Debian 13 warnings-as-errors Release build and CTest pass 10/10,
-including focused TLS, bounded-I/O, configuration, Argon2id and anti-abuse
-tests. Live systemd and temporary ncdc interoperability results are recorded in
-the release manifest.
+The v0.0.13 Debian 13 warnings-as-errors Release build and CTest pass 10/10,
+including focused ADC syntax/order, typed-ban, protocol-flood, TLS,
+bounded-I/O, configuration, Argon2id and anti-abuse tests. Live systemd and
+temporary ncdc interoperability results are recorded in the release manifest.
 
 See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`,
-`docs/dc24h.eu-v0.0.12.md`,
-`docs/adr/0016-native-tls-bounded-io-and-timeouts.md`, ADR-0015 and the earlier
-security/deployment ADRs.
+`docs/dc24h.eu-v0.0.13.md`,
+`docs/adr/0017-adc-input-validation-and-protocol-flood-bans.md`, ADR-0016 and the
+earlier security/deployment ADRs.

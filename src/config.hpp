@@ -1,6 +1,9 @@
 /*
     config.hpp
 
+    v0.0.13:
+        - expose bounded protocol-flood window and temporary-ban settings
+
     v0.0.12:
         - add TLS/ADCS, TLS-only, I/O limit and phase-timeout settings
 

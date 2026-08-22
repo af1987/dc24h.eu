@@ -1,6 +1,10 @@
 /*
     adc.cpp
 
+    v0.0.13:
+        - centralize ADC syntax, length and login-order validation
+        - set auditable protocol, identity and NORMAL login flags
+
     v0.0.08:
         - reject duplicate INF names and post-login identity/share changes
         - keep CID, nickname and share stable for moderation admission decisions
@@ -26,12 +30,13 @@
         - support BQUI disconnect requests
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 #include "adc.hpp"
 
 #include "hash.hpp"
+#include "io_limits.hpp"
 #include "version.hpp"
 
 #include <algorithm>
@@ -234,9 +239,7 @@ AdcAction AdcProtocol::handle_line(std::string_view line,
                                    AdcSession& session) const {
     AdcAction action;
 
-    if (!is_valid_utf8(line) ||
-        !has_valid_escapes(line) ||
-        has_raw_control(line)) {
+    if (!CheckProtoLen(line, MAX_MESS_SIZE) || !CheckProtoSyntax(line)) {
         action.direct_messages.emplace_back(
             status("240", "Malformed\\sprotocol\\sline"));
         action.disconnect = true;
@@ -253,14 +256,14 @@ AdcAction AdcProtocol::handle_line(std::string_view line,
     const auto& tokens = *maybe_tokens;
     const auto& fourcc = tokens.front();
 
-    if (session.state == AdcState::protocol) {
-        if (fourcc != "HSUP") {
-            action.direct_messages.emplace_back(
-                status("244", "Invalid\\sstate", "FC" + fourcc));
-            action.disconnect = true;
-            return action;
-        }
+    if (!CheckUserLogin(line, session)) {
+        action.direct_messages.emplace_back(
+            status("244", "Invalid\\sstate", "FC" + fourcc));
+        action.disconnect = true;
+        return action;
+    }
 
+    if (session.state == AdcState::protocol) {
         if (!valid_support_tokens(tokens)) {
             action.direct_messages.emplace_back(
                 status("240", "Malformed\\sSUP"));
@@ -290,14 +293,16 @@ AdcAction AdcProtocol::handle_line(std::string_view line,
             " VE" + escape_adc(std::string(program_name()) + "/" +
                                std::string(version())) +
             " SUTIGR,BASE\n");
+        session.login_flags |=
+            static_cast<std::uint8_t>(LoginFlag::protocol_validated);
         session.state = AdcState::identify;
         return action;
     }
 
     if (session.state == AdcState::identify) {
-        if (fourcc != "BINF" || tokens.size() < 3U) {
+        if (tokens.size() < 3U) {
             action.direct_messages.emplace_back(
-                status("244", "Invalid\\sstate", "FC" + fourcc));
+                status("243", "Required\\sINF\\sfield\\sbad", "FBBINF"));
             action.disconnect = true;
             return action;
         }
@@ -359,6 +364,9 @@ AdcAction AdcProtocol::handle_line(std::string_view line,
         }
 
         session.cid = *cid;
+        session.login_flags |=
+            static_cast<std::uint8_t>(LoginFlag::identity_validated) |
+            static_cast<std::uint8_t>(LoginFlag::normal);
         session.state = AdcState::normal;
 
         action.inf_update = true;
@@ -558,6 +566,44 @@ bool AdcProtocol::has_valid_escapes(std::string_view text) noexcept {
         ++i;
     }
     return true;
+}
+
+bool AdcProtocol::CheckProtoSyntax(std::string_view line) noexcept {
+    if (!is_valid_utf8(line) || !has_valid_escapes(line) ||
+        has_raw_control(line)) {
+        return false;
+    }
+    return split_tokens(line).has_value();
+}
+
+bool AdcProtocol::CheckProtoLen(std::string_view line,
+                                std::size_t maximum_length) noexcept {
+    return maximum_length > 0U && maximum_length <= MAX_MESS_SIZE &&
+           !line.empty() && line.size() <= maximum_length;
+}
+
+bool AdcProtocol::has_login_flag(const AdcSession& session,
+                                 LoginFlag flag) noexcept {
+    return (session.login_flags & static_cast<std::uint8_t>(flag)) != 0U;
+}
+
+bool AdcProtocol::CheckUserLogin(std::string_view line,
+                                 const AdcSession& session) noexcept {
+    if (line.size() < 4U) return false;
+    const auto command = line.substr(0U, 4U);
+    switch (session.state) {
+        case AdcState::protocol:
+            return session.login_flags == 0U && command == "HSUP";
+        case AdcState::identify:
+            return has_login_flag(session, LoginFlag::protocol_validated) &&
+                   !has_login_flag(session, LoginFlag::normal) &&
+                   command == "BINF";
+        case AdcState::normal:
+            return has_login_flag(session, LoginFlag::protocol_validated) &&
+                   has_login_flag(session, LoginFlag::identity_validated) &&
+                   has_login_flag(session, LoginFlag::normal);
+    }
+    return false;
 }
 
 std::string AdcProtocol::escape_adc(std::string_view value) {

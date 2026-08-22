@@ -1,6 +1,9 @@
 /*
     config_tests.cpp
 
+    v0.0.13:
+        - verify protocol-flood window and temporary-ban configuration
+
     v0.0.12:
         - verify TLS/TLS-only, bounded I/O and ADC timeout configuration
 
@@ -118,6 +121,7 @@ int run_config_tests() {
         assert(split.listen_port == 1511U);
         assert(split.anti_abuse.pwd_tmpban == 900U);
         assert(split.anti_abuse.max_users_from_ip == 10U);
+        assert(split.anti_abuse.protocol_flood_limit == 120U);
 
         const auto protected_runtime = root / "protected.conf";
         write_file(
@@ -131,12 +135,18 @@ int run_config_tests() {
                 "clone_detect_count=2\n"
                 "clone_det_tban_time=180\n"
                 "clone_ip_tban_time=240\n"
+                "protocol_flood_limit=50\n"
+                "protocol_flood_window=5\n"
+                "protocol_flood_tmpban=60\n"
                 "database_config=database.cnf\n");
         const auto protected_config = load_config(protected_runtime.string());
         assert(protected_config.anti_abuse.pwd_tmpban == 120U);
         assert(protected_config.anti_abuse.password_failure_limit == 4U);
         assert(protected_config.anti_abuse.max_users_from_ip == 8U);
         assert(protected_config.anti_abuse.clone_detect_count == 2U);
+        assert(protected_config.anti_abuse.protocol_flood_limit == 50U);
+        assert(protected_config.anti_abuse.protocol_flood_window == 5U);
+        assert(protected_config.anti_abuse.protocol_flood_tmpban == 60U);
 
         const auto certificate = root / "server.crt";
         const auto private_key = root / "server.key";
@@ -210,6 +220,16 @@ int run_config_tests() {
                 "database_config=database.cnf\n");
         assert(throws([&] {
             static_cast<void>(load_config(invalid_protection.string()));
+        }));
+
+        const auto invalid_flood = root / "invalid-flood.conf";
+        write_file(
+            invalid_flood,
+            runtime_prefix +
+                "protocol_flood_limit=1\n"
+                "database_config=database.cnf\n");
+        assert(throws([&] {
+            static_cast<void>(load_config(invalid_flood.string()));
         }));
 
         const auto absolute_runtime = root / "absolute.conf";

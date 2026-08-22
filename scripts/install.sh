@@ -1,6 +1,10 @@
 #!/bin/bash
 # install.sh
 #
+# v0.0.13:
+#   - migrate protocol-flood limits and typed temporary-ban defaults
+#   - install dc24h.eu-v0.0.13 after the complete test gate
+#
 # v0.0.12:
 #   - install OpenSSL and provision a protected TLS 1.3 certificate/key pair
 #   - migrate TLS, bounded-buffer and ADC phase-timeout settings
@@ -265,7 +269,7 @@ if [[ ! "${database_password}" =~ ^[A-Za-z0-9._-]{16,128}$ ]]; then
 fi
 
 add_runtime_history=0
-if ! grep -q '^# v0\.0\.12:' "${runtime_source}"; then
+if ! grep -q '^# v0\.0\.13:' "${runtime_source}"; then
     add_runtime_history=1
 fi
 
@@ -274,8 +278,8 @@ awk -v add_history="${add_runtime_history}" '
         if (add_history == 1) {
             print "# dc24h.conf"
             print "#"
-            print "# v0.0.12:"
-            print "#   - migrate runtime configuration with TLS and bounded I/O defaults"
+            print "# v0.0.13:"
+            print "#   - migrate runtime configuration with protocol-flood defaults"
             print "#   - reference protected database.cnf credentials"
             print "#"
             print "# Author: gpt-5.6-sol"
@@ -294,6 +298,9 @@ awk -v add_history="${add_runtime_history}" '
     /^[[:space:]]*clone_detect_count[[:space:]]*=/ { have_clone_count=1 }
     /^[[:space:]]*clone_det_tban_time[[:space:]]*=/ { have_clone_window=1 }
     /^[[:space:]]*clone_ip_tban_time[[:space:]]*=/ { have_clone_ban=1 }
+    /^[[:space:]]*protocol_flood_limit[[:space:]]*=/ { have_protocol_limit=1 }
+    /^[[:space:]]*protocol_flood_window[[:space:]]*=/ { have_protocol_window=1 }
+    /^[[:space:]]*protocol_flood_tmpban[[:space:]]*=/ { have_protocol_ban=1 }
     /^[[:space:]]*tls_enabled[[:space:]]*=/ { have_tls_enabled=1 }
     /^[[:space:]]*tls_only_mode[[:space:]]*=/ { have_tls_only=1 }
     /^[[:space:]]*tls_port[[:space:]]*=/ { have_tls_port=1 }
@@ -319,6 +326,9 @@ awk -v add_history="${add_runtime_history}" '
         if (!have_clone_count) print "clone_detect_count=3"
         if (!have_clone_window) print "clone_det_tban_time=600"
         if (!have_clone_ban) print "clone_ip_tban_time=900"
+        if (!have_protocol_limit) print "protocol_flood_limit=120"
+        if (!have_protocol_window) print "protocol_flood_window=10"
+        if (!have_protocol_ban) print "protocol_flood_tmpban=300"
         if (!have_tls_enabled) print "tls_enabled=1"
         if (!have_tls_only) print "tls_only_mode=0"
         if (!have_tls_port) print "tls_port=1512"
@@ -344,7 +354,7 @@ else
     {
         printf '%s\n' '# database.cnf'
         printf '%s\n' '#'
-        printf '%s\n' '# v0.0.12:'
+        printf '%s\n' '# v0.0.13:'
         printf '%s\n' '#   - install protected MariaDB client credentials for this hub home'
         printf '%s\n' '#'
         printf '%s\n' '# Author: gpt-5.6-sol'
@@ -416,7 +426,7 @@ systemctl is-active --quiet dc24h.service
 
 reject_symlink "/etc/dc24h.eu"
 install -d -o root -g root -m 0755 "/etc/dc24h.eu"
-legacy_staging_directory="$(mktemp -d /etc/dc24h.eu/.v0.0.12-link.XXXXXX)"
+legacy_staging_directory="$(mktemp -d /etc/dc24h.eu/.v0.0.13-link.XXXXXX)"
 ln -s -- "${runtime_config}" "${legacy_staging_directory}/dc24h.conf"
 mv -fT -- "${legacy_staging_directory}/dc24h.conf" "${legacy_config}"
 rmdir -- "${legacy_staging_directory}"

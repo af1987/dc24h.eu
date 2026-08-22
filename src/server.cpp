@@ -1,6 +1,10 @@
 /*
     server.cpp
 
+    v0.0.13:
+        - apply protocol-flood temporary bans before ADC command handling
+        - count authorization-IP failures in the eBT_PASSW protection window
+
     v0.0.12:
         - serve ADC and TLS 1.3 ADCS through bounded transport objects
         - enforce tls_only_mode, ReadLineLocal limits and login/idle timeouts
@@ -408,12 +412,33 @@ void Server::client_loop(int client_fd,
         auto read_result = reader.ReadLineLocal(std::string_view(
             buffer.data(), static_cast<std::size_t>(received)));
         if (read_result.status == ReadLineStatus::overflow) {
+            anti_abuse_.AddIPTempBan(
+                remote_address,
+                config_.anti_abuse.protocol_flood_tmpban,
+                eBT_FLOOD);
             send_all(client_fd, "ISTA 240 Protocol\\sline\\stoo\\slong\n");
             finished = true;
             break;
         }
 
         for (const auto& line : read_result.lines) {
+            if (!AdcProtocol::CheckProtoLen(
+                    line, config_.io_limits.mLineSizeMax)) {
+                anti_abuse_.AddIPTempBan(
+                    remote_address,
+                    config_.anti_abuse.protocol_flood_tmpban,
+                    eBT_FLOOD);
+                send_all(client_fd,
+                         "ISTA 240 Protocol\\sline\\stoo\\slong\n");
+                finished = true;
+                break;
+            }
+            if (anti_abuse_.CheckProtocolFlood(remote_address)) {
+                send_all(client_fd,
+                         "ISTA 230 Protocol\\sflood\\slimit\\sexceeded\n");
+                finished = true;
+                break;
+            }
             const auto previous_state = session.state;
             const bool is_myinfo =
                 line.size() >= 4U && line.substr(1U, 3U) == "INF";
@@ -559,6 +584,8 @@ bool Server::finish_identification(
             return false;
         }
         if (!mAuthIP(policy.auth_ip, remote_address)) {
+            static_cast<void>(
+                anti_abuse_.LoginError(remote_address, *decoded_nick));
             send_all(client_fd, "ISTA 227 Account\\sIP\\smismatch\n");
             return false;
         }

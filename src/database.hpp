@@ -3,6 +3,9 @@
 
     - MariaDB persistence API
 
+        v0.0.13:
+            - route SQL string literals through WriteStringConstant()
+
         v0.0.11:
             - migrate verified legacy password hashes to Argon2id
 
@@ -232,6 +235,7 @@ public:
     bool has_any_enabled_users();
 
 private:
+    std::string WriteStringConstant(std::string_view value);
     std::string escape_locked(std::string_view value);
     void execute_locked(const std::string& sql);
 

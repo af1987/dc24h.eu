@@ -1,6 +1,10 @@
 /*
     adc.hpp
 
+    v0.0.13:
+        - declare CheckProtoSyntax(), CheckProtoLen() and CheckUserLogin()
+        - add explicit ADC login-completion flags beside the protocol state
+
     v0.0.08:
         - document immutable post-login identity/share fields for moderation safety
 
@@ -19,11 +23,13 @@
         - add routing decisions for INF, MSG, SCH and RES messages
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -37,8 +43,15 @@ enum class AdcState {
     normal
 };
 
+enum class LoginFlag : std::uint8_t {
+    protocol_validated = 1U,
+    identity_validated = 2U,
+    normal = 4U
+};
+
 struct AdcSession {
     AdcState state{AdcState::protocol};
+    std::uint8_t login_flags{0U};
     std::string cid;
 };
 
@@ -77,6 +90,13 @@ public:
 
     static bool is_valid_utf8(std::string_view text) noexcept;
     static bool has_valid_escapes(std::string_view text) noexcept;
+    static bool CheckProtoSyntax(std::string_view line) noexcept;
+    static bool CheckProtoLen(std::string_view line,
+                              std::size_t maximum_length) noexcept;
+    static bool CheckUserLogin(std::string_view line,
+                               const AdcSession& session) noexcept;
+    static bool has_login_flag(const AdcSession& session,
+                               LoginFlag flag) noexcept;
     static std::string escape_adc(std::string_view value);
 
 private:

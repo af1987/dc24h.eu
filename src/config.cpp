@@ -1,6 +1,9 @@
 /*
     config.cpp
 
+    v0.0.13:
+        - parse and bound protocol-flood rate/window/ban settings
+
     v0.0.12:
         - parse and validate TLS/ADCS, bounded buffers and phase timeouts
         - validate certificate/key file boundaries when TLS is enabled
@@ -265,6 +268,9 @@ Config load_config(const std::string& path) {
         else if (key == "clone_detect_count") config.anti_abuse.clone_detect_count = parse_integer<std::size_t>(value, key);
         else if (key == "clone_det_tban_time") config.anti_abuse.clone_det_tban_time = parse_integer<std::uint32_t>(value, key);
         else if (key == "clone_ip_tban_time") config.anti_abuse.clone_ip_tban_time = parse_integer<std::uint32_t>(value, key);
+        else if (key == "protocol_flood_limit") config.anti_abuse.protocol_flood_limit = parse_integer<std::size_t>(value, key);
+        else if (key == "protocol_flood_window") config.anti_abuse.protocol_flood_window = parse_integer<std::uint32_t>(value, key);
+        else if (key == "protocol_flood_tmpban") config.anti_abuse.protocol_flood_tmpban = parse_integer<std::uint32_t>(value, key);
         else if (key == "tls_enabled") config.tls.enabled = parse_boolean(value, key);
         else if (key == "tls_only_mode") config.tls.tls_only_mode = parse_boolean(value, key);
         else if (key == "tls_port") config.tls.port = parse_integer<std::uint16_t>(value, key);
@@ -369,7 +375,13 @@ Config load_config(const std::string& path) {
         config.anti_abuse.clone_det_tban_time == 0U ||
         config.anti_abuse.clone_det_tban_time > 86400U ||
         config.anti_abuse.clone_ip_tban_time == 0U ||
-        config.anti_abuse.clone_ip_tban_time > 86400U) {
+        config.anti_abuse.clone_ip_tban_time > 86400U ||
+        config.anti_abuse.protocol_flood_limit < 2U ||
+        config.anti_abuse.protocol_flood_limit > 100000U ||
+        config.anti_abuse.protocol_flood_window == 0U ||
+        config.anti_abuse.protocol_flood_window > 3600U ||
+        config.anti_abuse.protocol_flood_tmpban == 0U ||
+        config.anti_abuse.protocol_flood_tmpban > 86400U) {
         throw std::runtime_error("invalid anti-abuse configuration limits");
     }
     if (config.database_config_path.empty() && config.database_password.empty()) {

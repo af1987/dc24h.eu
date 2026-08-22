@@ -1,6 +1,10 @@
 <!--
 readme.md
 
+v0.0.13:
+  - index ADC input validation and typed temporary-ban controls
+  - point to ADR-0017 and the v0.0.13 release manifest
+
 v0.0.12:
   - index native ADCS/TLS, bounded transport and timeout documentation
   - point to ADR-0016 and the v0.0.12 release manifest
@@ -54,7 +58,7 @@ Date: 2026-08-22
 
 # dc24h.eu documentation
 
-This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.12`.
+This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.13`.
 
 ## Documents
 
@@ -62,7 +66,8 @@ This directory is the authoritative design and operations documentation for `dc2
 - `instructions.md` — permanent engineering, deployment security, versioning, ADR, password-security and C++ pair rules.
 - `changelog.md` — release history.
 - `install.md` — Debian 13 installation, hub-home settings administration, tests, systemd and first-Master bootstrap.
-- `dc24h.eu-v0.0.12.md` — current TLS, bounded-I/O and timeout release manifest.
+- `dc24h.eu-v0.0.13.md` — current ADC validation and protocol-flood release manifest.
+- `dc24h.eu-v0.0.12.md` — previous TLS, bounded-I/O and timeout release manifest.
 - `dc24h.eu-v0.0.11.md` — previous Argon2id and anti-abuse release manifest.
 - `dc24h.eu-v0.0.10.md` — previous password, RBAC and hostname-ban release manifest.
 - `dc24h.eu-v0.0.09.md` — previous per-hub home and settings administration release manifest.
@@ -90,6 +95,8 @@ This directory is the authoritative design and operations documentation for `dc2
 - Configuration: non-secret `dc24h.conf` plus protected `database.cnf`
 - Network: ADC on 1511 and configured ADCS/TLS 1.3 on 1512; optional TLS-only
 - Resource controls: hard input/output ceilings and phase-specific deadlines
+- Protocol controls: syntax/length/order guards, explicit login flags and
+  typed per-IP flood/authentication temporary bans
 - Installer secret input: hidden prompt or root-owned mode-`0600` file on a
   clean install; automatic credential reuse without rotation on reinstall
 - Author/date: `gpt-5.6-sol`, `2026-08-22`
@@ -142,3 +149,9 @@ v0.0.12 adds OpenSSL-backed ADCS, optional TLS-only service, hard logical-line
 and output limits, and six named ADC session timeouts. `ncdc` remains only a
 test client; the server accepts other conforming ADC clients. See
 `dc24h.eu-v0.0.12.md` and ADR-0016.
+
+v0.0.13 adds `CheckProtoSyntax()`, `CheckProtoLen()`, `CheckUserLogin()`,
+explicit login-stage flags and a sliding command-rate window that applies
+`eBT_FLOOD`. Authorization IP/password failures apply `eBT_PASSW`. The ADC-only
+hub intentionally excludes NMDC Lock-to-Key; see `dc24h.eu-v0.0.13.md` and
+ADR-0017.

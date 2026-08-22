@@ -1,6 +1,9 @@
 /*
     adc_tests.hpp
 
+    v0.0.13:
+        - retain declarations for protocol guard and login-flag tests
+
     v0.0.12:
         - declare ADC identity and canonical v0.0.12 validation
 

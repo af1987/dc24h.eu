@@ -1,6 +1,10 @@
 <!--
 architecture.md
 
+v0.0.13:
+  - add explicit ADC syntax, length, login-order and login-flag boundaries
+  - add typed protocol-flood/authentication bans and SQL escaping status
+
 v0.0.12:
   - add native ADCS with configurable TLS minimum and TLS-only operation
   - add hard line/output ceilings and phase-specific connection timeouts
@@ -49,15 +53,15 @@ Author: gpt-5.6-sol
 Date: 2026-08-22
 -->
 
-# Architecture — dc24h.eu-v0.0.12
+# Architecture — dc24h.eu-v0.0.13
 
 ## Baseline
 
 `dc24h.eu` is a C++20 Direct Connect hub for Debian 13. It implements the ADC
 1.0.4 BASE/TIGR profile, validates UTF-8, stores persistent state in MariaDB
-`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.12
-retains the v0.0.11 authentication/anti-abuse controls and adds native ADCS,
-TLS-only operation, bounded socket input/output and phase-specific deadlines.
+`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.13
+retains native ADCS and bounded transports, then makes ADC syntax, logical-line
+length, login ordering, login flags and protocol-flood enforcement explicit.
 
 ## Runtime flow
 
@@ -78,8 +82,11 @@ TLS-only operation, bounded socket input/output and phase-specific deadlines.
    then checks active address,
    range and (when configured by an active entry) reverse-hostname bans after
    accept, and allocates a four-character ADC SID.
-5. `AdcProtocol` negotiates BASE/TIGR in SUP, validates UTF-8/escaping, TIGR
-   PID/CID identity, unique INF names and B/D/E/F routing. BINF `SU` is not
+5. Before routing, `CheckProtoLen()` applies configured/hard length ceilings,
+   `CheckProtoSyntax()` validates UTF-8, ADC escaping and allowlisted headers,
+   and `CheckUserLogin()` checks message order against explicit protocol,
+   identity and NORMAL flags. `AdcProtocol` then negotiates BASE/TIGR, validates
+   TIGR PID/CID identity, unique INF names and B/D/E/F routing. BINF `SU` is not
    required to repeat SUP features.
 6. Before NORMAL, the server checks active nickname, CID, address, range, host,
    prefix and share targets, `mAuthIP`, and the configured AP/VE clone count. A
@@ -99,7 +106,8 @@ TLS-only operation, bounded socket input/output and phase-specific deadlines.
 - `src/user.cpp` / `src/user.hpp`: canonical numeric classes, Argon2id password
   writes, legacy MD5/PBKDF2 verification and upgrade detection.
 - `src/anti_abuse.cpp` / `src/anti_abuse.hpp`: temporary IP bans, independent
-  failure windows, connection/reconnect limits, `mAuthIP` and clone accounting.
+  failure windows, connection/reconnect limits, `mAuthIP`, clone accounting and
+  sliding protocol-command windows with `eBT_FLOOD`/`eBT_PASSW` types.
 - `src/io_limits.cpp` / `src/io_limits.hpp`: `ReadLineLocal()`, the hard
   `MAX_MESS_SIZE`/`MAX_SEND_SIZE` ceilings and configurable
   `mLineSizeMax`/`max_outbuf_size` limits.
@@ -112,7 +120,8 @@ TLS-only operation, bounded socket input/output and phase-specific deadlines.
 - `src/moderation.cpp` / `src/moderation.hpp`: target normalization, duration parsing and admission matching.
 - `src/user_commands.cpp` / `src/user_commands.hpp`: complete key grammar, duration parsing, validation and persistent command execution.
 - `src/database.cpp` / `src/database.hpp`: mutex-serialized MariaDB operations,
-  account invariants, UTC-expiring policies and transaction-safe setting snapshots.
+  account invariants, UTC-expiring policies, transaction-safe setting snapshots
+  and centralized `WriteStringConstant()` SQL literal escaping.
 - `src/server.cpp` / `src/server.hpp`: listener, sessions, moderation enforcement, private OPChat, temporary classes, online IPv4 and optional reverse DNS.
 - `src/config.cpp` / `src/config.hpp`: runtime configuration, split MariaDB
   option-file validation, relative path resolution and legacy inline migration support.
@@ -123,7 +132,27 @@ TLS-only operation, bounded socket input/output and phase-specific deadlines.
 - `scripts/install.sh`: creates the hub home, migrates runtime configuration,
   securely creates or reuses protected MariaDB options, validates the staged
   deployment and installs/restarts the service.
-- `src/version.cpp` / `src/version.hpp`: `0.0.12`, release identity, author and date.
+- `src/version.cpp` / `src/version.hpp`: `0.0.13`, release identity, author and date.
+
+## Input-validation and temporary-ban boundary
+
+Socket data is rejected before database, DNS or routing work when it violates
+the ADC length, syntax or session-order contract. Each accepted logical line is
+also recorded in a bounded sliding per-IP window. Exceeding
+`protocol_flood_limit` within `protocol_flood_window` calls
+`AddIPTempBan(..., eBT_FLOOD)` for `protocol_flood_tmpban` seconds. An overlong
+logical line is treated as an immediate flood event and closed.
+
+Password failures and Authorization IP mismatches feed independent IP/account
+windows; reaching the threshold applies `eBT_PASSW` for `pwd_tmpban` seconds.
+The current ADC profile does not expose GPA/PAS, so account passwords are not a
+complete remote ADC authentication mechanism. The design intentionally omits
+NMDC Lock-to-Key: ADC BASE/TIGR and TIGR PID/CID are used instead.
+
+SQL strings currently pass through `Database::WriteStringConstant()` using the
+active MariaDB connection. This prevents unescaped literal concatenation in
+the existing query layer but remains weaker and harder to audit than prepared
+statements; all new query APIs should prefer bound parameters.
 
 Every production and test `*.cpp` has a matching `*.hpp` and vice versa.
 
