@@ -1,6 +1,12 @@
 /*
     server.cpp
 
+    v0.0.14:
+        - classify bounded HTTP/1.1 requests before ADC admission
+        - serve WebAdmin on the same plaintext or TLS port as the hub
+        - keep WebAdmin requests out of ADC capacity and abuse accounting
+        - cap pending connections and reject overlong HTTP request-line probes
+
     v0.0.13:
         - apply protocol-flood temporary bans before ADC command handling
         - count authorization-IP failures in the eBT_PASSW protection window
@@ -85,6 +91,7 @@
 #include <ctime>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <stdexcept>
 
 namespace dc24h {
@@ -114,7 +121,8 @@ Server::Server(const Config& config,
       protocol_(protocol),
       database_(database),
       user_commands_(database),
-      anti_abuse_(config.anti_abuse) {
+      anti_abuse_(config.anti_abuse),
+      webadmin_(config) {
     if (config_.tls.enabled) {
         tls_context_ = std::make_unique<TlsServerContext>(config_.tls);
     }
@@ -206,91 +214,100 @@ void Server::accept_client(int listener_fd, bool use_tls) {
                         sizeof(address_buffer));
         const std::string remote_address =
             address != nullptr ? address : "unknown";
-        std::string moderation_hostname;
-
-        if (const auto denied = anti_abuse_.AdmitConnection(remote_address);
-            denied.has_value()) {
-            std::string response = "ISTA 230 " +
-                AdcProtocol::escape_adc(denied->reason);
-            if (denied->retry_after_seconds > 0U) {
-                response += " TL" +
-                    std::to_string(denied->retry_after_seconds);
-            }
-            if (!use_tls) {
-                transport->write_all(
-                    response + "\n",
-                    std::chrono::seconds(config_.timeout.General));
-            }
-            return;
-        }
-
-        try {
-            std::optional<ModerationEntry> blocked;
-            {
-                std::lock_guard moderation_lock(moderation_mutex_);
-                if (database_.has_active_hostname_bans()) {
-                    moderation_hostname =
-                        hostname_for_address(remote_address, true);
-                }
-                blocked = database_.active_moderation_match(
-                    {}, {}, remote_address, std::nullopt,
-                    moderation_hostname);
-            }
-            if (blocked.has_value()) {
-                if (!use_tls) {
-                    transport->write_all(
-                        moderation_denial(*blocked),
-                        std::chrono::seconds(config_.timeout.General));
-                }
-                anti_abuse_.RecordDisconnect(remote_address);
+        constexpr std::size_t webadmin_connection_reserve = 64U;
+        const std::size_t maximum_open =
+            config_.max_clients >
+                std::numeric_limits<std::size_t>::max() -
+                    webadmin_connection_reserve
+            ? std::numeric_limits<std::size_t>::max()
+            : config_.max_clients + webadmin_connection_reserve;
+        std::size_t current = open_connections_.load();
+        do {
+            if (current >= maximum_open) {
+                transport->shutdown();
                 return;
             }
-        } catch (const std::exception& ex) {
-            std::cerr << "moderation admission error: " << ex.what() << '\n';
-            if (!use_tls) {
-                transport->write_all(
-                    "ISTA 500 Moderation\\scheck\\sunavailable\n",
-                    std::chrono::seconds(config_.timeout.General));
-            }
-            anti_abuse_.RecordDisconnect(remote_address);
-            return;
-        }
-
-        std::string sid;
-        {
-            std::lock_guard lock(clients_mutex_);
-            if (clients_.size() >= config_.max_clients) {
-                if (!use_tls) {
-                    transport->write_all(
-                        "ISTA 211 Hub\\sfull\n",
-                        std::chrono::seconds(config_.timeout.General));
-                }
-                anti_abuse_.RecordDisconnect(remote_address);
-                return;
-            }
-
-            sid = next_sid();
-            ClientInfo client;
-            client.sid = sid;
-            client.remote_address = remote_address;
-            client.moderation_hostname = moderation_hostname;
-            clients_.emplace(client_fd, std::move(client));
-        }
-        {
-            std::lock_guard lock(transports_mutex_);
-            transports_.emplace(client_fd, transport);
-        }
-
-        try {
-            database_.record_event(sid, "connect", remote_address);
-        } catch (const std::exception& ex) {
-            std::cerr << "database event error: " << ex.what() << '\n';
-        }
-
+        } while (!open_connections_.compare_exchange_weak(
+            current, current + 1U));
         std::lock_guard worker_lock(workers_mutex_);
-        workers_.emplace_back(
-            &Server::client_loop, this, client_fd, sid, remote_address,
-            use_tls, std::move(transport));
+        try {
+            workers_.emplace_back(
+                &Server::client_loop, this, client_fd, remote_address,
+                use_tls, transport);
+        } catch (...) {
+            open_connections_.fetch_sub(1U);
+            transport->shutdown();
+            throw;
+        }
+}
+
+std::optional<std::string> Server::admit_adc_client(
+    int client_fd,
+    std::string_view remote_address,
+    const std::shared_ptr<SocketTransport>& transport) {
+    if (const auto denied = anti_abuse_.AdmitConnection(remote_address);
+        denied.has_value()) {
+        std::string response = "ISTA 230 " +
+            AdcProtocol::escape_adc(denied->reason);
+        if (denied->retry_after_seconds > 0U) {
+            response += " TL" + std::to_string(denied->retry_after_seconds);
+        }
+        transport->write_all(response + "\n",
+            std::chrono::seconds(config_.timeout.General));
+        return std::nullopt;
+    }
+
+    std::string moderation_hostname;
+    try {
+        std::optional<ModerationEntry> blocked;
+        {
+            std::lock_guard moderation_lock(moderation_mutex_);
+            if (database_.has_active_hostname_bans()) {
+                moderation_hostname = hostname_for_address(remote_address, true);
+            }
+            blocked = database_.active_moderation_match(
+                {}, {}, remote_address, std::nullopt, moderation_hostname);
+        }
+        if (blocked.has_value()) {
+            transport->write_all(moderation_denial(*blocked),
+                std::chrono::seconds(config_.timeout.General));
+            anti_abuse_.RecordDisconnect(remote_address);
+            return std::nullopt;
+        }
+    } catch (const std::exception& ex) {
+        std::cerr << "moderation admission error: " << ex.what() << '\n';
+        transport->write_all("ISTA 500 Moderation\\scheck\\sunavailable\n",
+            std::chrono::seconds(config_.timeout.General));
+        anti_abuse_.RecordDisconnect(remote_address);
+        return std::nullopt;
+    }
+
+    std::string sid;
+    {
+        std::lock_guard lock(clients_mutex_);
+        if (clients_.size() >= config_.max_clients) {
+            transport->write_all("ISTA 211 Hub\\sfull\n",
+                std::chrono::seconds(config_.timeout.General));
+            anti_abuse_.RecordDisconnect(remote_address);
+            return std::nullopt;
+        }
+        sid = next_sid();
+        ClientInfo client;
+        client.sid = sid;
+        client.remote_address = std::string(remote_address);
+        client.moderation_hostname = std::move(moderation_hostname);
+        clients_.emplace(client_fd, std::move(client));
+    }
+    {
+        std::lock_guard lock(transports_mutex_);
+        transports_.emplace(client_fd, transport);
+    }
+    try {
+        database_.record_event(sid, "connect", remote_address);
+    } catch (const std::exception& ex) {
+        std::cerr << "database event error: " << ex.what() << '\n';
+    }
+    return sid;
 }
 
 int Server::create_listener(std::uint16_t port) const {
@@ -340,15 +357,24 @@ int Server::create_listener(std::uint16_t port) const {
 }
 
 void Server::client_loop(int client_fd,
-                         std::string sid,
                          std::string remote_address,
                          bool use_tls,
                          std::shared_ptr<SocketTransport> transport) {
+    struct OpenConnectionGuard {
+        std::atomic_size_t& count;
+        ~OpenConnectionGuard() { count.fetch_sub(1U); }
+    };
+    [[maybe_unused]] OpenConnectionGuard open_connection_guard{
+        open_connections_};
     std::array<char, 8192> buffer{};
     BoundedLineReader reader(config_.io_limits.mLineSizeMax);
 
     AdcSession session;
     bool finished = false;
+    bool adc_registered = false;
+    bool protocol_decided = false;
+    std::string protocol_probe;
+    std::string sid;
     auto connection_started = std::chrono::steady_clock::now();
     auto phase_started = connection_started;
     auto last_activity = connection_started;
@@ -409,8 +435,53 @@ void Server::client_loop(int client_fd,
         }
         last_activity = std::chrono::steady_clock::now();
 
-        auto read_result = reader.ReadLineLocal(std::string_view(
-            buffer.data(), static_cast<std::size_t>(received)));
+        std::string_view protocol_input(
+            buffer.data(), static_cast<std::size_t>(received));
+        if (!protocol_decided) {
+            protocol_probe.append(protocol_input);
+            const auto protocol =
+                WebAdmin::classify_protocol(protocol_probe);
+            const auto first_line_end = protocol_probe.find("\r\n");
+            if (protocol == ProtocolProbe::need_more &&
+                protocol_probe.size() <= 1024U) {
+                continue;
+            }
+            if (protocol == ProtocolProbe::need_more ||
+                (protocol == ProtocolProbe::http &&
+                 first_line_end > 1024U)) {
+                constexpr std::string_view body =
+                    "{\"error\":\"request line too long\"}";
+                const std::string response =
+                    "HTTP/1.1 414 URI Too Long\r\n"
+                    "Content-Type: application/json; charset=utf-8\r\n"
+                    "Content-Length: " + std::to_string(body.size()) +
+                    "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n" +
+                    std::string(body);
+                transport->write_all(
+                    response, std::chrono::seconds(config_.timeout.General));
+                finished = true;
+                break;
+            }
+            if (protocol == ProtocolProbe::http) {
+                handle_webadmin_connection(
+                    std::move(protocol_probe), remote_address, use_tls,
+                    transport);
+                finished = true;
+                break;
+            }
+            protocol_decided = true;
+            const auto admitted =
+                admit_adc_client(client_fd, remote_address, transport);
+            if (!admitted.has_value()) {
+                finished = true;
+                break;
+            }
+            sid = *admitted;
+            adc_registered = true;
+            protocol_input = protocol_probe;
+        }
+
+        auto read_result = reader.ReadLineLocal(protocol_input);
         if (read_result.status == ReadLineStatus::overflow) {
             anti_abuse_.AddIPTempBan(
                 remote_address,
@@ -488,7 +559,7 @@ void Server::client_loop(int client_fd,
     bool was_normal = false;
     std::optional<std::string> disconnected_username;
     std::string clone_fingerprint;
-    {
+    if (adc_registered) {
         std::lock_guard lock(clients_mutex_);
         const auto it = clients_.find(client_fd);
         if (it != clients_.end()) {
@@ -499,14 +570,17 @@ void Server::client_loop(int client_fd,
         }
     }
 
-    {
+    if (adc_registered) {
         std::lock_guard lock(transports_mutex_);
         transports_.erase(client_fd);
     }
     transport->shutdown();
-    anti_abuse_.RecordDisconnect(remote_address, clone_fingerprint);
+    if (adc_registered) {
+        anti_abuse_.RecordDisconnect(remote_address, clone_fingerprint);
+    }
 
     try {
+        if (!adc_registered) return;
         database_.record_event(sid, "disconnect", remote_address);
         if (was_normal && disconnected_username.has_value()) {
             database_.record_account_logout(*disconnected_username);
@@ -517,6 +591,91 @@ void Server::client_loop(int client_fd,
 
     if (was_normal) {
         broadcast("IQUI " + sid + "\n");
+    }
+}
+
+void Server::handle_webadmin_connection(
+    std::string request,
+    std::string_view remote_address,
+    bool use_tls,
+    const std::shared_ptr<SocketTransport>& transport) {
+    std::array<char, 4096> buffer{};
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(config_.timeout.Key);
+    auto state = WebAdmin::request_state(
+        request, config_.webadmin.maximum_request_size);
+    while (state == HttpRequestState::incomplete &&
+           std::chrono::steady_clock::now() < deadline) {
+        pollfd descriptor{transport->fd(), POLLIN, 0};
+        const int poll_result = transport->has_pending_input()
+            ? 1 : ::poll(&descriptor, 1, 250);
+        if (poll_result < 0 && errno == EINTR) continue;
+        if (poll_result <= 0) continue;
+        if (!transport->has_pending_input() &&
+            (descriptor.revents & POLLIN) == 0) break;
+        const auto received = transport->read_some(buffer.data(), buffer.size());
+        if (received <= 0) break;
+        request.append(buffer.data(), static_cast<std::size_t>(received));
+        state = WebAdmin::request_state(
+            request, config_.webadmin.maximum_request_size);
+    }
+
+    if (state != HttpRequestState::complete) {
+        const bool too_large = state == HttpRequestState::too_large;
+        const std::string body = too_large
+            ? "{\"error\":\"request too large\"}"
+            : "{\"error\":\"bad request\"}";
+        const std::string response =
+            "HTTP/1.1 " + std::string(too_large
+                ? "413 Content Too Large" : "400 Bad Request") +
+            "\r\nContent-Type: application/json; charset=utf-8\r\n"
+            "Content-Length: " + std::to_string(body.size()) +
+            "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n" + body;
+        transport->write_all(
+            response, std::chrono::seconds(config_.timeout.General));
+        return;
+    }
+
+    WebAdminRuntime runtime;
+    {
+        std::lock_guard lock(clients_mutex_);
+        runtime.online_clients = static_cast<std::size_t>(std::count_if(
+            clients_.begin(), clients_.end(), [](const auto& entry) {
+                return entry.second.normal;
+            }));
+    }
+    runtime.maximum_clients = config_.max_clients;
+    runtime.settings = [this] {
+        return database_.hub_setting_entries();
+    };
+    runtime.update_setting = [this](std::string_view key,
+                                    std::string_view value) {
+        return database_.set_hub_setting(key, value);
+    };
+    runtime.audit = [this](std::string_view address,
+                           std::string_view target,
+                           bool success) {
+        database_.record_webadmin_audit(
+            address, "update_setting", target, success);
+    };
+
+    try {
+        transport->write_all(
+            webadmin_.handle(
+                request, remote_address, use_tls, runtime),
+            std::chrono::seconds(config_.timeout.General));
+    } catch (const std::exception& ex) {
+        std::cerr << "WebAdmin request error: " << ex.what() << '\n';
+        constexpr std::string_view body =
+            "{\"error\":\"internal server error\"}";
+        const std::string response =
+            "HTTP/1.1 500 Internal Server Error\r\n"
+            "Content-Type: application/json; charset=utf-8\r\n"
+            "Content-Length: " + std::to_string(body.size()) +
+            "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n" +
+            std::string(body);
+        transport->write_all(
+            response, std::chrono::seconds(config_.timeout.General));
     }
 }
 

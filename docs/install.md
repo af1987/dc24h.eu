@@ -1,6 +1,10 @@
 <!--
 install.md
 
+v0.0.14:
+  - install loopback-only same-port WebAdmin and its protected bearer token
+  - document dashboard/API, MariaDB audit and shared-port validation
+
 v0.0.13:
   - install the ADC validation and typed temporary-ban release
   - document protocol-flood configuration and ncdc test-only verification
@@ -75,7 +79,7 @@ server, ShellCheck and `en_US.UTF-8` locale support.
 ```bash
 git clone https://github.com/af1987/dc24h.eu.git
 cd dc24h.eu
-git checkout agent/dc24h-v0.0.13
+git checkout agent/dc24h-v0.0.14
 sudo ./scripts/install.sh
 ```
 
@@ -106,7 +110,7 @@ The installer accepts no positional arguments and always installs the
 and a fixed system `PATH`. After dependency, account and directory preparation,
 the deployment sequence is:
 
-1. provision or preserve the protected TLS certificate/key pair;
+1. provision or preserve the protected TLS certificate/key pair and WebAdmin token;
 2. configure and build the Release targets, then pass CTest;
 3. configure MariaDB and apply `sql/schema.sql`;
 4. publish `dc24h.conf` and `database.cnf` atomically;
@@ -120,7 +124,7 @@ the deployment sequence is:
 ## Installed hub home
 
 The text `nazwa-huba` is a placeholder for one validated instance-name segment;
-it is not a literal directory. The v0.0.13 instance is exactly:
+it is not a literal directory. The v0.0.14 instance is exactly:
 
 `/var/lib/dc24h.eu/dc24h.eu`
 
@@ -133,6 +137,7 @@ it is not a literal directory. The v0.0.13 instance is exactly:
 | `tls/` | `root:dc24h`, `0750` | TLS material directory |
 | `tls/server.crt` | `root:dc24h`, `0640` | bootstrap/replacement certificate chain |
 | `tls/server.key` | `root:dc24h`, `0640` | protected private key |
+| `webadmin.token` | `dc24h:dc24h`, `0600` | WebAdmin bearer token |
 | `scripts/` | `root:dc24h`, `0750` | instance-local tools |
 | `scripts/01-edit-hub-settings.sh` | `root:dc24h`, `0750` | settings wrapper |
 
@@ -180,7 +185,42 @@ timeout_myinfo=30
 timeout_password=30
 timeout_general=120
 
+webadmin_enabled=1
+webadmin_loopback_only=1
+webadmin_token_file=/var/lib/dc24h.eu/dc24h.eu/webadmin.token
+webadmin_max_request_size=16384
+
 database_config=database.cnf
+```
+
+## WebAdmin
+
+No additional TCP port is opened. With the default profile the dashboard is
+available locally at `http://127.0.0.1:1511/webadmin` and, after trusting the
+bootstrap certificate for this local test only, at
+`https://127.0.0.1:1512/webadmin`. Obtain the token as root without printing it
+into shell history:
+
+```bash
+sudo -u dc24h /bin/sh -c 'read -r token < "$1"; exec curl --fail --silent \
+  -H "Authorization: Bearer ${token}" \
+  http://127.0.0.1:1511/webadmin/api/v1/status' sh \
+  /var/lib/dc24h.eu/dc24h.eu/webadmin.token
+```
+
+The browser page asks for this token and keeps it only in page memory. The API
+supports `GET /webadmin/api/v1/status`, `GET /webadmin/api/v1/settings`, and
+`PUT /webadmin/api/v1/settings` with a `text/plain` body containing a canonical
+key, newline and value. Successful and rejected writes are appended to
+`webadmin_audit`. Keep `webadmin_loopback_only=1` unless access is protected by
+TLS or a trusted authenticated reverse proxy on the same host.
+
+Verify a write audit after changing a noncritical test setting and restoring
+it:
+
+```sql
+SELECT remote_address, action_name, target_name, succeeded, created_at
+FROM webadmin_audit ORDER BY id DESC LIMIT 5;
 ```
 
 The adjacent credential file is a standard MariaDB option file:
@@ -515,17 +555,17 @@ ncdc -c "${GUEST_SESSION_DIR}" -n
 In the first `ncdc` session:
 
 ```text
-/set nick V013Master
-/open dc24h-v013 adc://127.0.0.1:1511/
-/say ncdc-v0.0.13-connection-test
+/set nick V014Master
+/open dc24h-v014 adc://127.0.0.1:1511/
+/say ncdc-v0.0.14-connection-test
 ```
 
 In the second session, use a different persistent client identity:
 
 ```text
-/set nick V013Guest
-/open dc24h-v013 adc://127.0.0.1:1511/
-/say ncdc-v0.0.13-connection-test
+/set nick V014Guest
+/open dc24h-v014 adc://127.0.0.1:1511/
+/say ncdc-v0.0.14-connection-test
 ```
 
 For reproduction, require both clients to complete ADC/TIGR identification,
@@ -535,10 +575,10 @@ isolated release database, also change a setting with
 restore the default, restart `dc24h.service`, reconnect and repeat the echo.
 BASE/TIGR remain negotiated in SUP and TIGR PID/CID validation remains active.
 
-The v0.0.13 release test uses Debian 13 and a real `ncdc` client only as a
+The v0.0.14 release test uses Debian 13 and a real `ncdc` client only as a
 temporary interoperability check. It must complete ADC/TIGR identification and
-echo `ncdc-v0.0.13-connection-test`; after a service restart it must reconnect
-and echo `ncdc-v0.0.13-after-restart`. This does not make ncdc a dependency or
+echo `ncdc-v0.0.14-connection-test`; after a service restart it must reconnect
+and echo `ncdc-v0.0.14-after-restart`. This does not make ncdc a dependency or
 restrict production connections from other ADC clients.
 
 ## TLS and limit validation
@@ -562,6 +602,19 @@ still completes the TLS/ADC handshake, then restore the chosen production
 policy. An integration fixture with small limits must also prove that a line
 over `mLineSizeMax` returns fatal status and closes, while an idle pre-login
 connection closes at the configured phase deadline.
+
+## v0.0.14 validation record
+
+- Warnings-as-errors Release build and all 11 CTest cases passed, including the
+  focused WebAdmin security suite and locale-independent content lengths.
+- Unauthenticated API access returned 401; valid-token HTTP and HTTPS returned
+  200; the settings endpoint returned 30 rows and a valid PUT was audited.
+- The schema applied twice, the v0.0.14 service remained active, systemd
+  verification passed with exposure score `3.0 OK`, TLS 1.3 succeeded and TLS
+  1.2 was rejected.
+- After repeated HTTP requests, real ncdc 1.23.1 completed ADC/TIGR and echoed
+  `ncdc-v0.0.14-connection-test` on port 1511. It automatically reconnected
+  after systemd restart and echoed `ncdc-v0.0.14-after-restart`.
 
 ## v0.0.13 validation record
 
@@ -605,10 +658,11 @@ an administrator reset.
 ## Network
 
 The default ADC listener is TCP port `1511`; ADCS/TLS uses `1512` when enabled.
-v0.0.13 remains IPv4-only. `tls_only_mode=1` opens only the encrypted listener.
+v0.0.14 remains IPv4-only. `tls_only_mode=1` opens only the encrypted listener.
 Administrative `!set` paths remain restricted to `127.0.0.1`; `+passwd` and
 explicitly enabled `+regme` are self-service exceptions. The separate local
-settings CLI requires root and the protected hub-home contract.
+settings CLI requires root and the protected hub-home contract. WebAdmin shares
+the active listener and defaults to loopback-only access.
 
 ## systemd
 

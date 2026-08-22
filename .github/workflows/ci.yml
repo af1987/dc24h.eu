@@ -1,5 +1,8 @@
 # ci.yml
 #
+# v0.0.14:
+#   - run same-port WebAdmin build and regression tests on Debian 13
+#
 # v0.0.13:
 #   - retain Debian 13 warnings/test gate for ADC input hardening
 #

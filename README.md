@@ -1,6 +1,11 @@
 <!--
 README.md
 
+v0.0.14:
+  - raise project description to dc24h.eu-v0.0.14
+  - add token-authenticated WebAdmin on the existing ADC/ADCS ports
+  - add MariaDB-backed settings administration and append-only audit
+
 v0.0.13:
   - raise project description to dc24h.eu-v0.0.13
   - add ADC syntax/length/order guards and explicit login flags
@@ -64,7 +69,7 @@ Date: 2026-08-22
 
 # dc24h.eu
 
-`dc24h.eu-v0.0.13` is a C++20 Direct Connect ADC hub for Debian 13.
+`dc24h.eu-v0.0.14` is a C++20 Direct Connect ADC hub for Debian 13.
 
 ## Baseline
 
@@ -81,6 +86,7 @@ Date: 2026-08-22
 - Runtime configuration: `dc24h.conf` plus protected `database.cnf`
 - Default ADC TCP port: 1511
 - Default ADCS/TLS TCP port: 1512 (`tls_only_mode` is optional)
+- WebAdmin: HTTP/HTTPS on the active hub port; no additional listener
 - Reverse DNS: disabled by default (`dns_lookup=0`)
 - Author: `gpt-5.6-sol`
 - Release date: `2026-08-22`
@@ -198,6 +204,23 @@ identity, whole-login, INF, initial-password and normal-idle stages have
 separate finite timeouts. ncdc is used only for release connection tests and
 is not a server dependency or a restriction on supported ADC clients.
 
+## Same-port WebAdmin
+
+v0.0.14 classifies a bounded HTTP/1.1 request before admitting the connection
+as ADC. The dashboard is available at `/webadmin` on either active hub port:
+`http://127.0.0.1:1511/webadmin` or `https://127.0.0.1:1512/webadmin` with the
+default dual-listener profile. HTTP connections do not consume ADC client
+slots, reconnect counters or SIDs.
+
+The default policy is loopback-only and API calls require a constant-time
+checked bearer token loaded from
+`/var/lib/dc24h.eu/dc24h.eu/webadmin.token`. The panel exposes current capacity
+and the same 30 canonical MariaDB-backed hub settings as the local CLI. Updates
+reuse full-snapshot validation and transactions, and append a row to
+`webadmin_audit`. The token is never stored in MariaDB, returned by the API or
+committed to the repository. Use the TLS port or an authenticated local reverse
+proxy before intentionally allowing non-loopback administration.
+
 ## RBAC and authorization
 
 Every parsed account/moderation command is mapped to an explicit permission in
@@ -216,12 +239,13 @@ the stronger network boundary because reverse DNS is not authenticated.
 
 The management trust boundary remains loopback-only (`127.0.0.1`) because ADC VERIFY (`GPA`/`PAS`) is not implemented. Timed policies persist in MariaDB with UTC expiry and are enforced before ADC routing. Delegated registration is capped at class 1.
 
-The v0.0.13 Debian 13 warnings-as-errors Release build and CTest pass 10/10,
+The v0.0.14 Debian 13 warnings-as-errors Release build and CTest pass 11/11,
+with same-port WebAdmin parsing/authentication regression coverage,
 including focused ADC syntax/order, typed-ban, protocol-flood, TLS,
 bounded-I/O, configuration, Argon2id and anti-abuse tests. Live systemd and
 temporary ncdc interoperability results are recorded in the release manifest.
 
 See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`,
-`docs/dc24h.eu-v0.0.13.md`,
-`docs/adr/0017-adc-input-validation-and-protocol-flood-bans.md`, ADR-0016 and the
+`docs/dc24h.eu-v0.0.14.md`,
+`docs/adr/0018-same-port-webadmin.md`, ADR-0017, ADR-0016 and the
 earlier security/deployment ADRs.

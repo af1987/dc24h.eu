@@ -1,6 +1,9 @@
 /*
     database.hpp
 
+    v0.0.14:
+        - expose prepared-statement WebAdmin audit persistence
+
     - MariaDB persistence API
 
         v0.0.13:
@@ -155,6 +158,10 @@ public:
     void record_event(std::string_view sid,
                       std::string_view event,
                       std::string_view remote_address);
+    void record_webadmin_audit(std::string_view remote_address,
+                               std::string_view action,
+                               std::string_view target,
+                               bool succeeded);
 
     std::uint64_t create_user(std::string_view username,
                               UserClass user_class,

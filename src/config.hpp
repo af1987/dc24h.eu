@@ -1,6 +1,9 @@
 /*
     config.hpp
 
+    v0.0.14:
+        - add secure same-port WebAdmin runtime settings
+
     v0.0.13:
         - expose bounded protocol-flood window and temporary-ban settings
 
@@ -45,6 +48,14 @@ struct SessionTimeouts {
     std::uint32_t General{120};
 };
 
+struct WebAdminSettings {
+    bool enabled{false};
+    bool loopback_only{true};
+    std::string token_file;
+    std::string token;
+    std::size_t maximum_request_size{16384};
+};
+
 struct Config {
     std::string hub_name{"dc24h.eu"};
     std::string hub_description{"dc24h.eu Direct Connect ADC Hub"};
@@ -57,6 +68,7 @@ struct Config {
     TlsSettings tls;
     IoLimits io_limits;
     SessionTimeouts timeout;
+    WebAdminSettings webadmin;
 
     std::string database_config_path;
     std::string database_host{"127.0.0.1"};

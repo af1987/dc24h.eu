@@ -3,6 +3,9 @@
 
     - canonical runtime version metadata API
 
+        v0.0.14:
+            - raise canonical release metadata to dc24h.eu-v0.0.14
+
         v0.0.13:
             - raise canonical release metadata to dc24h.eu-v0.0.13
             - retain gpt-5.6-sol / 2026-08-22 provenance

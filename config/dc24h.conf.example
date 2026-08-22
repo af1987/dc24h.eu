@@ -1,5 +1,9 @@
 # dc24h.conf.example
 #
+# v0.0.14:
+#   - enable loopback-only WebAdmin on the ADC/ADCS hub port
+#   - load its bearer token from a protected file and bound HTTP requests
+#
 # v0.0.13:
 #   - add active protocol flood window and typed temporary-ban duration
 #
@@ -66,5 +70,11 @@ timeout_login=30
 timeout_myinfo=30
 timeout_password=30
 timeout_general=120
+
+# WebAdmin shares the active ADC/ADCS port; no extra listener is opened.
+webadmin_enabled=1
+webadmin_loopback_only=1
+webadmin_token_file=/var/lib/dc24h.eu/dc24h.eu/webadmin.token
+webadmin_max_request_size=16384
 
 database_config=database.cnf

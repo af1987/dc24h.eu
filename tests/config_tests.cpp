@@ -1,6 +1,9 @@
 /*
     config_tests.cpp
 
+    v0.0.14:
+        - verify protected WebAdmin token and request-bound configuration
+
     v0.0.13:
         - verify protocol-flood window and temporary-ban configuration
 
@@ -111,7 +114,10 @@ int run_config_tests() {
     try {
         const auto runtime = root / "dc24h.conf";
         const auto database = root / "database.cnf";
+        const auto webadmin_token = root / "webadmin.token";
         write_file(database, database_options);
+        write_file(webadmin_token,
+                   "0123456789abcdef0123456789abcdef0123456789abcdef\n");
         write_file(runtime, runtime_prefix + "database_config=database.cnf\n");
 
         const auto split = load_config(runtime.string());
@@ -122,6 +128,40 @@ int run_config_tests() {
         assert(split.anti_abuse.pwd_tmpban == 900U);
         assert(split.anti_abuse.max_users_from_ip == 10U);
         assert(split.anti_abuse.protocol_flood_limit == 120U);
+        assert(!split.webadmin.enabled);
+
+        const auto webadmin_runtime = root / "webadmin.conf";
+        write_file(
+            webadmin_runtime,
+            runtime_prefix +
+                "webadmin_enabled=1\n"
+                "webadmin_loopback_only=1\n"
+                "webadmin_token_file=" + webadmin_token.string() + "\n"
+                "webadmin_max_request_size=8192\n"
+                "database_config=database.cnf\n");
+        const auto webadmin_config = load_config(webadmin_runtime.string());
+        assert(webadmin_config.webadmin.enabled);
+        assert(webadmin_config.webadmin.loopback_only);
+        assert(webadmin_config.webadmin.maximum_request_size == 8192U);
+        assert(webadmin_config.webadmin.token.size() == 48U);
+
+        const auto missing_webadmin_token = root / "missing-webadmin.conf";
+        write_file(
+            missing_webadmin_token,
+            runtime_prefix + "webadmin_enabled=1\n"
+                "database_config=database.cnf\n");
+        assert(throws([&] {
+            static_cast<void>(load_config(missing_webadmin_token.string()));
+        }));
+
+        const auto small_webadmin_request = root / "small-webadmin.conf";
+        write_file(
+            small_webadmin_request,
+            runtime_prefix + "webadmin_max_request_size=1024\n"
+                "database_config=database.cnf\n");
+        assert(throws([&] {
+            static_cast<void>(load_config(small_webadmin_request.string()));
+        }));
 
         const auto protected_runtime = root / "protected.conf";
         write_file(

@@ -1,6 +1,10 @@
 /*
     server.hpp
 
+    v0.0.14:
+        - declare same-port ADC/HTTP classification and WebAdmin handling
+        - defer ADC admission until the connection protocol is identified
+
     v0.0.13:
         - retain typed protocol/authentication anti-abuse integration
 
@@ -64,6 +68,7 @@
 #include "rbac.hpp"
 #include "tls_transport.hpp"
 #include "user_commands.hpp"
+#include "webadmin.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -105,11 +110,19 @@ private:
 
     int create_listener(std::uint16_t port) const;
     void accept_client(int listener_fd, bool use_tls);
+    std::optional<std::string> admit_adc_client(
+        int client_fd,
+        std::string_view remote_address,
+        const std::shared_ptr<SocketTransport>& transport);
     void client_loop(int client_fd,
-                     std::string sid,
                      std::string remote_address,
                      bool use_tls,
                      std::shared_ptr<SocketTransport> transport);
+    void handle_webadmin_connection(
+        std::string request,
+        std::string_view remote_address,
+        bool use_tls,
+        const std::shared_ptr<SocketTransport>& transport);
 
     bool finish_identification(
         int client_fd,
@@ -169,9 +182,11 @@ private:
     Database& database_;
     UserCommandProcessor user_commands_;
     AntiAbuse anti_abuse_;
+    WebAdmin webadmin_;
     std::unique_ptr<TlsServerContext> tls_context_;
 
     std::atomic<std::uint32_t> sid_counter_{1};
+    std::atomic_size_t open_connections_{0};
     std::mutex moderation_mutex_;
     std::mutex clients_mutex_;
     std::unordered_map<int, ClientInfo> clients_;

@@ -1,6 +1,10 @@
 #!/bin/bash
 # install.sh
 #
+# v0.0.14:
+#   - provision a protected WebAdmin token and same-port configuration
+#   - install dc24h.eu-v0.0.14 after the complete test gate
+#
 # v0.0.13:
 #   - migrate protocol-flood limits and typed temporary-ban defaults
 #   - install dc24h.eu-v0.0.13 after the complete test gate
@@ -81,6 +85,7 @@ readonly database_config="${hub_home}/database.cnf"
 readonly tls_directory="${hub_home}/tls"
 readonly tls_certificate="${tls_directory}/server.crt"
 readonly tls_private_key="${tls_directory}/server.key"
+readonly webadmin_token="${hub_home}/webadmin.token"
 readonly legacy_config="/etc/dc24h.eu/dc24h.conf"
 
 reject_symlink() {
@@ -207,11 +212,31 @@ reject_symlink "${runtime_config}"
 reject_symlink "${database_config}"
 reject_symlink "${tls_certificate}"
 reject_symlink "${tls_private_key}"
+reject_symlink "${webadmin_token}"
 
 install -d -o root -g root -m 0755 "${hub_home_base}"
 install -d -o root -g dc24h -m 0750 "${hub_home}"
 install -d -o root -g dc24h -m 0750 "${hub_home}/scripts"
 install -d -o root -g dc24h -m 0750 "${tls_directory}"
+
+if [[ -f "${webadmin_token}" ]]; then
+    if [[ "$(stat -c '%U:%G:%a' "${webadmin_token}")" != \
+          "dc24h:dc24h:600" ]]; then
+        echo "webadmin.token must be dc24h:dc24h mode 0600." >&2
+        exit 1
+    fi
+    if [[ "$(wc -l < "${webadmin_token}")" -ne 1 ]] ||
+       ! grep -Eq '^[!-~]{32,128}$' "${webadmin_token}"; then
+        echo "webadmin.token must contain one 32-128 character token." >&2
+        exit 1
+    fi
+else
+    temporary_webadmin_token="$(mktemp /run/dc24h-webadmin-token.XXXXXX)"
+    openssl rand -hex 32 > "${temporary_webadmin_token}"
+    install -o dc24h -g dc24h -m 0600 \
+        "${temporary_webadmin_token}" "${webadmin_token}"
+    rm -f -- "${temporary_webadmin_token}"
+fi
 
 if [[ -f "${tls_certificate}" && -f "${tls_private_key}" ]]; then
     validate_config_source "${tls_certificate}"
@@ -269,7 +294,7 @@ if [[ ! "${database_password}" =~ ^[A-Za-z0-9._-]{16,128}$ ]]; then
 fi
 
 add_runtime_history=0
-if ! grep -q '^# v0\.0\.13:' "${runtime_source}"; then
+if ! grep -q '^# v0\.0\.14:' "${runtime_source}"; then
     add_runtime_history=1
 fi
 
@@ -278,8 +303,9 @@ awk -v add_history="${add_runtime_history}" '
         if (add_history == 1) {
             print "# dc24h.conf"
             print "#"
-            print "# v0.0.13:"
-            print "#   - migrate runtime configuration with protocol-flood defaults"
+            print "# v0.0.14:"
+            print "#   - enable loopback-only WebAdmin on the shared hub port"
+            print "#   - load its bearer token from a protected file"
             print "#   - reference protected database.cnf credentials"
             print "#"
             print "# Author: gpt-5.6-sol"
@@ -316,6 +342,10 @@ awk -v add_history="${add_runtime_history}" '
     /^[[:space:]]*timeout_myinfo[[:space:]]*=/ { have_timeout_myinfo=1 }
     /^[[:space:]]*timeout_password[[:space:]]*=/ { have_timeout_password=1 }
     /^[[:space:]]*timeout_general[[:space:]]*=/ { have_timeout_general=1 }
+    /^[[:space:]]*webadmin_enabled[[:space:]]*=/ { have_webadmin_enabled=1 }
+    /^[[:space:]]*webadmin_loopback_only[[:space:]]*=/ { have_webadmin_loopback=1 }
+    /^[[:space:]]*webadmin_token_file[[:space:]]*=/ { have_webadmin_token=1 }
+    /^[[:space:]]*webadmin_max_request_size[[:space:]]*=/ { have_webadmin_limit=1 }
     { print }
     END {
         if (!have_pwd_tmpban) print "pwd_tmpban=900"
@@ -344,6 +374,10 @@ awk -v add_history="${add_runtime_history}" '
         if (!have_timeout_myinfo) print "timeout_myinfo=30"
         if (!have_timeout_password) print "timeout_password=30"
         if (!have_timeout_general) print "timeout_general=120"
+        if (!have_webadmin_enabled) print "webadmin_enabled=1"
+        if (!have_webadmin_loopback) print "webadmin_loopback_only=1"
+        if (!have_webadmin_token) print "webadmin_token_file=/var/lib/dc24h.eu/dc24h.eu/webadmin.token"
+        if (!have_webadmin_limit) print "webadmin_max_request_size=16384"
         print "database_config=database.cnf"
     }
 ' "${runtime_source}" > "${temporary_runtime}"
@@ -413,6 +447,7 @@ install -o root -g dc24h -m 0750 \
 [[ "$(stat -c '%U:%G:%a' "${tls_directory}")" == "root:dc24h:750" ]]
 [[ "$(stat -c '%U:%G:%a' "${tls_certificate}")" == "root:dc24h:640" ]]
 [[ "$(stat -c '%U:%G:%a' "${tls_private_key}")" == "root:dc24h:640" ]]
+[[ "$(stat -c '%U:%G:%a' "${webadmin_token}")" == "dc24h:dc24h:600" ]]
 [[ "$(stat -c '%U:%G:%a' "${hub_home}/scripts")" == "root:dc24h:750" ]]
 [[ "$(stat -c '%U:%G:%a' "${hub_home}/scripts/01-edit-hub-settings.sh")" == \
     "root:dc24h:750" ]]
@@ -426,7 +461,7 @@ systemctl is-active --quiet dc24h.service
 
 reject_symlink "/etc/dc24h.eu"
 install -d -o root -g root -m 0755 "/etc/dc24h.eu"
-legacy_staging_directory="$(mktemp -d /etc/dc24h.eu/.v0.0.13-link.XXXXXX)"
+legacy_staging_directory="$(mktemp -d /etc/dc24h.eu/.v0.0.14-link.XXXXXX)"
 ln -s -- "${runtime_config}" "${legacy_staging_directory}/dc24h.conf"
 mv -fT -- "${legacy_staging_directory}/dc24h.conf" "${legacy_config}"
 rmdir -- "${legacy_staging_directory}"
