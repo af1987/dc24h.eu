@@ -1,6 +1,10 @@
 <!--
 README.md
 
+v0.0.12:
+  - raise project description to dc24h.eu-v0.0.12
+  - add TLS 1.3 ADCS, optional TLS-only mode and bounded transports
+
 v0.0.11:
   - raise project description to dc24h.eu-v0.0.11
   - replace MD5 writes with Argon2id and legacy login-time migration
@@ -55,7 +59,7 @@ Date: 2026-08-22
 
 # dc24h.eu
 
-`dc24h.eu-v0.0.11` is a C++20 Direct Connect ADC hub for Debian 13.
+`dc24h.eu-v0.0.12` is a C++20 Direct Connect ADC hub for Debian 13.
 
 ## Baseline
 
@@ -71,6 +75,7 @@ Date: 2026-08-22
 - Hub home: `/var/lib/dc24h.eu/dc24h.eu`
 - Runtime configuration: `dc24h.conf` plus protected `database.cnf`
 - Default ADC TCP port: 1511
+- Default ADCS/TLS TCP port: 1512 (`tls_only_mode` is optional)
 - Reverse DNS: disabled by default (`dns_lookup=0`)
 - Author: `gpt-5.6-sol`
 - Release date: `2026-08-22`
@@ -160,6 +165,15 @@ counters, account IP authorization (`mAuthIP`), per-IP session limits
 (`CheckUserClone`, `clone_detect_count`, `clone_det_tban_time`,
 `clone_ip_tban_time`). Defaults are active in `dc24h.conf.example`.
 
+## TLS and bounded connections
+
+v0.0.12 adds an OpenSSL ADCS listener with a TLS 1.3 default minimum,
+protected certificate/key paths and optional encrypted-only operation. Logical
+input lines and outgoing messages have hard/configurable ceilings; SUP,
+identity, whole-login, INF, initial-password and normal-idle stages have
+separate finite timeouts. ncdc is used only for release connection tests and
+is not a server dependency or a restriction on supported ADC clients.
+
 ## RBAC and authorization
 
 Every parsed account/moderation command is mapped to an explicit permission in
@@ -178,12 +192,12 @@ the stronger network boundary because reverse DNS is not authenticated.
 
 The management trust boundary remains loopback-only (`127.0.0.1`) because ADC VERIFY (`GPA`/`PAS`) is not implemented. Timed policies persist in MariaDB with UTC expiry and are enforced before ADC routing. Delegated registration is capped at class 1.
 
-The v0.0.11 Debian 13 warnings-as-errors Release build and CTest pass 9/9,
-including focused Argon2id and active anti-abuse tests. MariaDB retained 30
-canonical settings, the installed systemd unit is active at exposure score 3.0,
-and real `ncdc 1.23.1` echoed both connection and post-restart markers.
+The v0.0.12 Debian 13 warnings-as-errors Release build and CTest pass 10/10,
+including focused TLS, bounded-I/O, configuration, Argon2id and anti-abuse
+tests. Live systemd and temporary ncdc interoperability results are recorded in
+the release manifest.
 
 See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`,
-`docs/dc24h.eu-v0.0.11.md`,
-`docs/adr/0015-argon2id-and-connection-abuse-protection.md`, ADR-0014 and the
-earlier deployment ADR-0013.
+`docs/dc24h.eu-v0.0.12.md`,
+`docs/adr/0016-native-tls-bounded-io-and-timeouts.md`, ADR-0015 and the earlier
+security/deployment ADRs.

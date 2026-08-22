@@ -1,6 +1,10 @@
 <!--
 install.md
 
+v0.0.12:
+  - install OpenSSL and protected TLS bootstrap material
+  - document ADCS/TLS-only, size limits, timeout and ncdc test procedures
+
 v0.0.11:
   - install libargon2 and the 0.0.11 active anti-abuse release
   - document runtime limits and ncdc connection validation
@@ -59,15 +63,15 @@ Date: 2026-08-22
 Run on Debian 13 with root/sudo access and network access to Debian package repositories.
 
 The build requires a C++20 compiler, CMake, pkg-config, MariaDB Connector/C
-development files, libgcrypt and libargon2 development files, MariaDB server,
-ShellCheck and `en_US.UTF-8` locale support.
+development files, libgcrypt, libargon2 and OpenSSL development files, MariaDB
+server, ShellCheck and `en_US.UTF-8` locale support.
 
 ## Automated install
 
 ```bash
 git clone https://github.com/af1987/dc24h.eu.git
 cd dc24h.eu
-git checkout agent/dc24h-v0.0.11
+git checkout agent/dc24h-v0.0.12
 sudo ./scripts/install.sh
 ```
 
@@ -98,20 +102,21 @@ The installer accepts no positional arguments and always installs the
 and a fixed system `PATH`. After dependency, account and directory preparation,
 the deployment sequence is:
 
-1. configure and build the Release targets, then pass CTest;
-2. configure MariaDB and apply `sql/schema.sql`;
-3. publish `dc24h.conf` and `database.cnf` atomically;
-4. run the just-built
+1. provision or preserve the protected TLS certificate/key pair;
+2. configure and build the Release targets, then pass CTest;
+3. configure MariaDB and apply `sql/schema.sql`;
+4. publish `dc24h.conf` and `database.cnf` atomically;
+5. run the just-built
    `build/dc24h-settings /var/lib/dc24h.eu/dc24h.eu check`;
-5. install the tested binaries, unit, examples and wrapper;
-6. run the installed settings check, restart the unit and require it active;
-7. atomically replace legacy `/etc/dc24h.eu/dc24h.conf` with a symlink to the
+6. install the tested binaries, unit, examples and wrapper;
+7. run the installed settings check, restart the unit and require it active;
+8. atomically replace legacy `/etc/dc24h.eu/dc24h.conf` with a symlink to the
    non-secret home `dc24h.conf`.
 
 ## Installed hub home
 
 The text `nazwa-huba` is a placeholder for one validated instance-name segment;
-it is not a literal directory. The v0.0.11 instance is exactly:
+it is not a literal directory. The v0.0.12 instance is exactly:
 
 `/var/lib/dc24h.eu/dc24h.eu`
 
@@ -121,6 +126,9 @@ it is not a literal directory. The v0.0.11 instance is exactly:
 | `/var/lib/dc24h.eu/dc24h.eu` | `root:dc24h`, `0750` | service-account home |
 | `dc24h.conf` | `root:dc24h`, `0640` | non-secret runtime settings |
 | `database.cnf` | `root:dc24h`, `0640` | MariaDB Connector/C options and password |
+| `tls/` | `root:dc24h`, `0750` | TLS material directory |
+| `tls/server.crt` | `root:dc24h`, `0640` | bootstrap/replacement certificate chain |
+| `tls/server.key` | `root:dc24h`, `0640` | protected private key |
 | `scripts/` | `root:dc24h`, `0750` | instance-local tools |
 | `scripts/01-edit-hub-settings.sh` | `root:dc24h`, `0750` | settings wrapper |
 
@@ -146,6 +154,24 @@ reconnect_min_interval=2
 clone_detect_count=3
 clone_det_tban_time=600
 clone_ip_tban_time=900
+
+tls_enabled=1
+tls_only_mode=0
+tls_port=1512
+tls_certificate=/var/lib/dc24h.eu/dc24h.eu/tls/server.crt
+tls_private_key=/var/lib/dc24h.eu/dc24h.eu/tls/server.key
+tls_min_version=TLS1.3
+tls_handshake_timeout=10
+
+mLineSizeMax=65535
+max_outbuf_size=262144
+
+timeout_key=10
+timeout_validate_nick=15
+timeout_login=30
+timeout_myinfo=30
+timeout_password=30
+timeout_general=120
 
 database_config=database.cnf
 ```
@@ -474,7 +500,7 @@ umask 077
 MASTER_SESSION_DIR="$(mktemp -d /tmp/dc24h-ncdc-master.XXXXXX)"
 GUEST_SESSION_DIR="$(mktemp -d /tmp/dc24h-ncdc-guest.XXXXXX)"
 
-# Run each command as a non-root user in its own terminal.
+# Run each command as a non-root user in its own terminal. ncdc is test-only.
 ncdc -c "${MASTER_SESSION_DIR}" -n
 ncdc -c "${GUEST_SESSION_DIR}" -n
 ```
@@ -482,17 +508,17 @@ ncdc -c "${GUEST_SESSION_DIR}" -n
 In the first `ncdc` session:
 
 ```text
-/set nick V011Master
-/open dc24h-v011 adc://127.0.0.1:1511/
-/say ncdc-v0.0.11-connection-test
+/set nick V012Master
+/open dc24h-v012 adc://127.0.0.1:1511/
+/say ncdc-v0.0.12-connection-test
 ```
 
 In the second session, use a different persistent client identity:
 
 ```text
-/set nick V011Guest
-/open dc24h-v011 adc://127.0.0.1:1511/
-/say ncdc-v0.0.11-connection-test
+/set nick V012Guest
+/open dc24h-v012 adc://127.0.0.1:1511/
+/say ncdc-v0.0.12-connection-test
 ```
 
 For reproduction, require both clients to complete ADC/TIGR identification,
@@ -502,11 +528,45 @@ isolated release database, also change a setting with
 restore the default, restart `dc24h.service`, reconnect and repeat the echo.
 BASE/TIGR remain negotiated in SUP and TIGR PID/CID validation remains active.
 
-The v0.0.11 release test uses Debian 13 and a real `ncdc` client. It must
-complete ADC/TIGR identification and echo `ncdc-v0.0.11-connection-test`; after
-a service restart it must reconnect and echo `ncdc-v0.0.11-after-restart`. The
-v0.0.08 historical moderation validation remains recorded in its own release
-documents.
+The v0.0.12 release test uses Debian 13 and a real `ncdc` client only as a
+temporary interoperability check. It must complete ADC/TIGR identification and
+echo `ncdc-v0.0.12-connection-test`; after a service restart it must reconnect
+and echo `ncdc-v0.0.12-after-restart`. This does not make ncdc a dependency or
+restrict production connections from other ADC clients.
+
+## TLS and limit validation
+
+Confirm TLS 1.3 succeeds and TLS 1.2 is rejected by the default minimum:
+
+```bash
+openssl s_client -connect 127.0.0.1:1512 -tls1_3 -brief </dev/null
+if openssl s_client -connect 127.0.0.1:1512 -tls1_2 </dev/null; then
+  echo 'unexpected TLS 1.2 success' >&2
+  exit 1
+fi
+```
+
+For an encrypted ncdc check use an `adcs://127.0.0.1:1512/` favorite and trust
+the bootstrap certificate only inside the isolated test profile. Replace the
+self-signed certificate with a CA-issued chain before public deployment.
+
+Set `tls_only_mode=1`, restart the service, verify that 1511 is closed and 1512
+still completes the TLS/ADC handshake, then restore the chosen production
+policy. An integration fixture with small limits must also prove that a line
+over `mLineSizeMax` returns fatal status and closes, while an idle pre-login
+connection closes at the configured phase deadline.
+
+## v0.0.12 validation record
+
+- Warnings-as-errors Release build and all 10 CTest cases passed.
+- TLS 1.3 negotiated successfully, TLS 1.2 was rejected, TLS-only exposed only
+  1512, and the dual-listener policy was restored afterward.
+- A 65536-byte line and an idle 10-second SUP phase both received fatal status
+  and closed. Repeated installation preserved credentials and 30 settings.
+- Real ncdc 1.23.1 completed ADC/ADCS echo and automatic post-restart reconnect;
+  it remains a release test only and is not installed as a service dependency.
+- The unit passed verification, remained active and received security exposure
+  score `3.0 OK`.
 
 ## v0.0.11 validation record
 
@@ -535,7 +595,8 @@ an administrator reset.
 
 ## Network
 
-The default ADC listener is TCP port `1511`. v0.0.11 remains IPv4-only.
+The default ADC listener is TCP port `1511`; ADCS/TLS uses `1512` when enabled.
+v0.0.12 remains IPv4-only. `tls_only_mode=1` opens only the encrypted listener.
 Administrative `!set` paths remain restricted to `127.0.0.1`; `+passwd` and
 explicitly enabled `+regme` are self-service exceptions. The separate local
 settings CLI requires root and the protected hub-home contract.

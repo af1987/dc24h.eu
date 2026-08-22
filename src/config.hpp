@@ -1,6 +1,9 @@
 /*
     config.hpp
 
+    v0.0.12:
+        - add TLS/ADCS, TLS-only, I/O limit and phase-timeout settings
+
     v0.0.11:
         - add validated anti-abuse and temporary-ban runtime settings
 
@@ -22,11 +25,22 @@
 #pragma once
 
 #include "anti_abuse.hpp"
+#include "io_limits.hpp"
+#include "tls_transport.hpp"
 
 #include <cstdint>
 #include <string>
 
 namespace dc24h {
+
+struct SessionTimeouts {
+    std::uint32_t Key{10};
+    std::uint32_t ValidateNick{15};
+    std::uint32_t Login{30};
+    std::uint32_t MyINFO{30};
+    std::uint32_t Password{30};
+    std::uint32_t General{120};
+};
 
 struct Config {
     std::string hub_name{"dc24h.eu"};
@@ -37,6 +51,9 @@ struct Config {
     std::string locale{"en_US.UTF-8"};
     bool dns_lookup{false};
     AntiAbuseSettings anti_abuse;
+    TlsSettings tls;
+    IoLimits io_limits;
+    SessionTimeouts timeout;
 
     std::string database_config_path;
     std::string database_host{"127.0.0.1"};

@@ -1,6 +1,11 @@
 <!--
 instructions.md
 
+v0.0.12:
+  - require TLS policy, optional TLS-only mode and protected key material
+  - require hard I/O ceilings and all named ADC connection timeouts
+  - clarify that ncdc is an interoperability test client, not a dependency
+
 v0.0.11:
   - require Argon2id writes and login-time upgrade of legacy hashes
   - require active password, IP, reconnect and clone abuse controls
@@ -54,7 +59,7 @@ Date: 2026-08-22
 
 # Engineering instructions
 
-These rules apply to `dc24h.eu-v0.0.11` and later changes.
+These rules apply to `dc24h.eu-v0.0.12` and later changes.
 
 ## Mandatory baseline
 
@@ -81,6 +86,26 @@ These rules apply to `dc24h.eu-v0.0.11` and later changes.
 - Document every new ADC extension, feature FOURCC, supported state and security implication.
 - Wire-compatibility changes require protocol tests.
 - BASE/TIGR are mandatory in SUP negotiation and TIGR PID/CID verification; do not require clients to repeat them in BINF `SU`.
+- `ncdc` is used only for connection/interoperability tests. Production must
+  accept any conforming ADC client, including DC++ and EiskaltDC++ families.
+
+## Transport security and resource rules
+
+- Build encrypted transport behind the exact `USE_TLS_PROXY` and
+  `USE_FEARTLS_PROXY` capabilities. Runtime TLS must be explicitly configurable.
+- Permit only TLS 1.2 or TLS 1.3 as a configured minimum; the release default
+  is TLS 1.3. Disable compression, renegotiation and early data.
+- `tls_only_mode=1` must prevent creation of the plaintext listener and must be
+  rejected when TLS is disabled.
+- Certificate and key paths must be absolute regular non-symlink files. The
+  private key must not be world-readable or group/world writable.
+- All TLS handshakes and socket writes need finite deadlines.
+- `ReadLineLocal()` must enforce `mLineSizeMax` before buffer growth and close
+  an over-limit connection. It may never exceed `MAX_MESS_SIZE`.
+- Every outgoing message must fit `max_outbuf_size` and `MAX_SEND_SIZE`; do not
+  introduce an unbounded output queue.
+- Keep active nonzero timeouts named `Key`, `ValidateNick`, `Login`, `MyINFO`,
+  `Password` and `General`, mapped to their corresponding connection stages.
 
 ## Account and user-class rules
 
@@ -123,7 +148,8 @@ The command semantics are intentionally non-overlapping:
   `docs/dc24h.eu-v0.0.08.md`; v0.0.10 password, RBAC and hostname-ban behavior
   is documented in `docs/dc24h.eu-v0.0.10.md` and ADR-0014. v0.0.11 Argon2id
   and anti-abuse behavior is documented in `docs/dc24h.eu-v0.0.11.md` and
-  ADR-0015.
+  ADR-0015. v0.0.12 TLS, bounded-I/O and timeout behavior is documented in
+  `docs/dc24h.eu-v0.0.12.md` and ADR-0016.
 - Global policy values are validated before storage in MariaDB; unknown keys and malformed values are rejected.
 - `+regme` must enforce configured class, nickname prefix, share and password rules.
 - Passwordless accounts receive a finite first-password deadline.

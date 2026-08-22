@@ -1,6 +1,9 @@
 /*
     config_tests.cpp
 
+    v0.0.12:
+        - verify TLS/TLS-only, bounded I/O and ADC timeout configuration
+
     v0.0.11:
         - verify anti-abuse defaults, overrides and invalid limits
 
@@ -134,6 +137,70 @@ int run_config_tests() {
         assert(protected_config.anti_abuse.password_failure_limit == 4U);
         assert(protected_config.anti_abuse.max_users_from_ip == 8U);
         assert(protected_config.anti_abuse.clone_detect_count == 2U);
+
+        const auto certificate = root / "server.crt";
+        const auto private_key = root / "server.key";
+        write_file(certificate, "test certificate\n");
+        write_file(private_key, "test private key\n");
+        const auto secure_transport = root / "secure-transport.conf";
+        write_file(
+            secure_transport,
+            runtime_prefix +
+                "tls_enabled=1\n"
+                "tls_only_mode=1\n"
+                "tls_port=1512\n"
+                "tls_certificate=" + certificate.string() + "\n"
+                "tls_private_key=" + private_key.string() + "\n"
+                "tls_min_version=TLS1.3\n"
+                "tls_handshake_timeout=9\n"
+                "mLineSizeMax=4096\n"
+                "max_outbuf_size=32768\n"
+                "timeout_key=8\n"
+                "timeout_validate_nick=12\n"
+                "timeout_login=20\n"
+                "timeout_myinfo=6\n"
+                "timeout_password=25\n"
+                "timeout_general=60\n"
+                "database_config=database.cnf\n");
+        const auto secure_config = load_config(secure_transport.string());
+        assert(secure_config.tls.enabled);
+        assert(secure_config.tls.tls_only_mode);
+        assert(secure_config.tls.minimum_version == "TLS1.3");
+        assert(secure_config.io_limits.mLineSizeMax == 4096U);
+        assert(secure_config.io_limits.max_outbuf_size == 32768U);
+        assert(secure_config.timeout.Key == 8U);
+        assert(secure_config.timeout.MyINFO == 6U);
+        assert(secure_config.timeout.Password == 25U);
+
+        const auto invalid_tls_only = root / "invalid-tls-only.conf";
+        write_file(
+            invalid_tls_only,
+            runtime_prefix +
+                "tls_only_mode=1\n"
+                "database_config=database.cnf\n");
+        assert(throws([&] {
+            static_cast<void>(load_config(invalid_tls_only.string()));
+        }));
+
+        const auto invalid_line_limit = root / "invalid-line-limit.conf";
+        write_file(
+            invalid_line_limit,
+            runtime_prefix +
+                "mLineSizeMax=65536\n"
+                "database_config=database.cnf\n");
+        assert(throws([&] {
+            static_cast<void>(load_config(invalid_line_limit.string()));
+        }));
+
+        const auto invalid_timeout = root / "invalid-timeout.conf";
+        write_file(
+            invalid_timeout,
+            runtime_prefix +
+                "timeout_login=5\n"
+                "database_config=database.cnf\n");
+        assert(throws([&] {
+            static_cast<void>(load_config(invalid_timeout.string()));
+        }));
 
         const auto invalid_protection = root / "invalid-protection.conf";
         write_file(

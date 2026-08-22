@@ -1,6 +1,10 @@
 #!/bin/bash
 # install.sh
 #
+# v0.0.12:
+#   - install OpenSSL and provision a protected TLS 1.3 certificate/key pair
+#   - migrate TLS, bounded-buffer and ADC phase-timeout settings
+#
 # v0.0.11:
 #   - install Argon2id and anti-abuse support for dc24h.eu-v0.0.11
 #   - retain protected MariaDB, systemd and per-hub-home deployment
@@ -70,6 +74,9 @@ readonly hub_home_base="/var/lib/dc24h.eu"
 readonly hub_home="${hub_home_base}/${hub_name}"
 readonly runtime_config="${hub_home}/dc24h.conf"
 readonly database_config="${hub_home}/database.cnf"
+readonly tls_directory="${hub_home}/tls"
+readonly tls_certificate="${tls_directory}/server.crt"
+readonly tls_private_key="${tls_directory}/server.key"
 readonly legacy_config="/etc/dc24h.eu/dc24h.conf"
 
 reject_symlink() {
@@ -164,8 +171,10 @@ apt-get install -y \
     libmariadb-dev \
     libgcrypt20-dev \
     libargon2-dev \
+    libssl-dev \
     mariadb-server \
     locales \
+    openssl \
     shellcheck
 
 sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen
@@ -189,12 +198,36 @@ fi
 reject_symlink "${hub_home_base}"
 reject_symlink "${hub_home}"
 reject_symlink "${hub_home}/scripts"
+reject_symlink "${tls_directory}"
 reject_symlink "${runtime_config}"
 reject_symlink "${database_config}"
+reject_symlink "${tls_certificate}"
+reject_symlink "${tls_private_key}"
 
 install -d -o root -g root -m 0755 "${hub_home_base}"
 install -d -o root -g dc24h -m 0750 "${hub_home}"
 install -d -o root -g dc24h -m 0750 "${hub_home}/scripts"
+install -d -o root -g dc24h -m 0750 "${tls_directory}"
+
+if [[ -f "${tls_certificate}" && -f "${tls_private_key}" ]]; then
+    validate_config_source "${tls_certificate}"
+    validate_config_source "${tls_private_key}"
+elif [[ -e "${tls_certificate}" || -e "${tls_private_key}" ]]; then
+    echo "TLS certificate and private key must both exist or both be absent." >&2
+    exit 1
+else
+    temporary_tls_directory="$(mktemp -d /run/dc24h-tls.XXXXXX)"
+    openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 \
+        -subj '/CN=dc24h.eu' \
+        -addext 'subjectAltName=DNS:dc24h.eu' \
+        -keyout "${temporary_tls_directory}/server.key" \
+        -out "${temporary_tls_directory}/server.crt"
+    install -o root -g dc24h -m 0640 \
+        "${temporary_tls_directory}/server.crt" "${tls_certificate}"
+    install -o root -g dc24h -m 0640 \
+        "${temporary_tls_directory}/server.key" "${tls_private_key}"
+    rm -rf -- "${temporary_tls_directory}"
+fi
 
 runtime_source="${project_root}/config/dc24h.conf.example"
 if [[ -f "${runtime_config}" ]]; then
@@ -232,7 +265,7 @@ if [[ ! "${database_password}" =~ ^[A-Za-z0-9._-]{16,128}$ ]]; then
 fi
 
 add_runtime_history=0
-if ! grep -q '^# v0\.0\.11:' "${runtime_source}"; then
+if ! grep -q '^# v0\.0\.12:' "${runtime_source}"; then
     add_runtime_history=1
 fi
 
@@ -241,8 +274,8 @@ awk -v add_history="${add_runtime_history}" '
         if (add_history == 1) {
             print "# dc24h.conf"
             print "#"
-            print "# v0.0.11:"
-            print "#   - migrate runtime configuration with active anti-abuse defaults"
+            print "# v0.0.12:"
+            print "#   - migrate runtime configuration with TLS and bounded I/O defaults"
             print "#   - reference protected database.cnf credentials"
             print "#"
             print "# Author: gpt-5.6-sol"
@@ -261,6 +294,21 @@ awk -v add_history="${add_runtime_history}" '
     /^[[:space:]]*clone_detect_count[[:space:]]*=/ { have_clone_count=1 }
     /^[[:space:]]*clone_det_tban_time[[:space:]]*=/ { have_clone_window=1 }
     /^[[:space:]]*clone_ip_tban_time[[:space:]]*=/ { have_clone_ban=1 }
+    /^[[:space:]]*tls_enabled[[:space:]]*=/ { have_tls_enabled=1 }
+    /^[[:space:]]*tls_only_mode[[:space:]]*=/ { have_tls_only=1 }
+    /^[[:space:]]*tls_port[[:space:]]*=/ { have_tls_port=1 }
+    /^[[:space:]]*tls_certificate[[:space:]]*=/ { have_tls_cert=1 }
+    /^[[:space:]]*tls_private_key[[:space:]]*=/ { have_tls_key=1 }
+    /^[[:space:]]*tls_min_version[[:space:]]*=/ { have_tls_min=1 }
+    /^[[:space:]]*tls_handshake_timeout[[:space:]]*=/ { have_tls_handshake=1 }
+    /^[[:space:]]*mLineSizeMax[[:space:]]*=/ { have_line_limit=1 }
+    /^[[:space:]]*max_outbuf_size[[:space:]]*=/ { have_out_limit=1 }
+    /^[[:space:]]*timeout_key[[:space:]]*=/ { have_timeout_key=1 }
+    /^[[:space:]]*timeout_validate_nick[[:space:]]*=/ { have_timeout_nick=1 }
+    /^[[:space:]]*timeout_login[[:space:]]*=/ { have_timeout_login=1 }
+    /^[[:space:]]*timeout_myinfo[[:space:]]*=/ { have_timeout_myinfo=1 }
+    /^[[:space:]]*timeout_password[[:space:]]*=/ { have_timeout_password=1 }
+    /^[[:space:]]*timeout_general[[:space:]]*=/ { have_timeout_general=1 }
     { print }
     END {
         if (!have_pwd_tmpban) print "pwd_tmpban=900"
@@ -271,6 +319,21 @@ awk -v add_history="${add_runtime_history}" '
         if (!have_clone_count) print "clone_detect_count=3"
         if (!have_clone_window) print "clone_det_tban_time=600"
         if (!have_clone_ban) print "clone_ip_tban_time=900"
+        if (!have_tls_enabled) print "tls_enabled=1"
+        if (!have_tls_only) print "tls_only_mode=0"
+        if (!have_tls_port) print "tls_port=1512"
+        if (!have_tls_cert) print "tls_certificate=/var/lib/dc24h.eu/dc24h.eu/tls/server.crt"
+        if (!have_tls_key) print "tls_private_key=/var/lib/dc24h.eu/dc24h.eu/tls/server.key"
+        if (!have_tls_min) print "tls_min_version=TLS1.3"
+        if (!have_tls_handshake) print "tls_handshake_timeout=10"
+        if (!have_line_limit) print "mLineSizeMax=65535"
+        if (!have_out_limit) print "max_outbuf_size=262144"
+        if (!have_timeout_key) print "timeout_key=10"
+        if (!have_timeout_nick) print "timeout_validate_nick=15"
+        if (!have_timeout_login) print "timeout_login=30"
+        if (!have_timeout_myinfo) print "timeout_myinfo=30"
+        if (!have_timeout_password) print "timeout_password=30"
+        if (!have_timeout_general) print "timeout_general=120"
         print "database_config=database.cnf"
     }
 ' "${runtime_source}" > "${temporary_runtime}"
@@ -281,7 +344,7 @@ else
     {
         printf '%s\n' '# database.cnf'
         printf '%s\n' '#'
-        printf '%s\n' '# v0.0.11:'
+        printf '%s\n' '# v0.0.12:'
         printf '%s\n' '#   - install protected MariaDB client credentials for this hub home'
         printf '%s\n' '#'
         printf '%s\n' '# Author: gpt-5.6-sol'
@@ -337,6 +400,9 @@ install -o root -g dc24h -m 0750 \
 [[ "$(stat -c '%U:%G:%a' "${hub_home}")" == "root:dc24h:750" ]]
 [[ "$(stat -c '%U:%G:%a' "${runtime_config}")" == "root:dc24h:640" ]]
 [[ "$(stat -c '%U:%G:%a' "${database_config}")" == "root:dc24h:640" ]]
+[[ "$(stat -c '%U:%G:%a' "${tls_directory}")" == "root:dc24h:750" ]]
+[[ "$(stat -c '%U:%G:%a' "${tls_certificate}")" == "root:dc24h:640" ]]
+[[ "$(stat -c '%U:%G:%a' "${tls_private_key}")" == "root:dc24h:640" ]]
 [[ "$(stat -c '%U:%G:%a' "${hub_home}/scripts")" == "root:dc24h:750" ]]
 [[ "$(stat -c '%U:%G:%a' "${hub_home}/scripts/01-edit-hub-settings.sh")" == \
     "root:dc24h:750" ]]
@@ -350,7 +416,7 @@ systemctl is-active --quiet dc24h.service
 
 reject_symlink "/etc/dc24h.eu"
 install -d -o root -g root -m 0755 "/etc/dc24h.eu"
-legacy_staging_directory="$(mktemp -d /etc/dc24h.eu/.v0.0.11-link.XXXXXX)"
+legacy_staging_directory="$(mktemp -d /etc/dc24h.eu/.v0.0.12-link.XXXXXX)"
 ln -s -- "${runtime_config}" "${legacy_staging_directory}/dc24h.conf"
 mv -fT -- "${legacy_staging_directory}/dc24h.conf" "${legacy_config}"
 rmdir -- "${legacy_staging_directory}"

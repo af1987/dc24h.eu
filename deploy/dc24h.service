@@ -1,5 +1,9 @@
 # dc24h.service
 #
+# v0.0.12:
+#   - raise service description to dc24h.eu-v0.0.12
+#   - retain Debian 13 systemd isolation for TLS and bounded transports
+#
 # v0.0.11:
 #   - raise service description to dc24h.eu-v0.0.11
 #   - retain Debian 13 systemd sandboxing for anti-abuse enforcement
@@ -50,7 +54,7 @@
 # Date: 2026-08-22
 
 [Unit]
-Description=dc24h.eu Direct Connect ADC Hub v0.0.11
+Description=dc24h.eu Direct Connect ADC Hub v0.0.12
 Documentation=https://github.com/af1987/dc24h.eu
 After=network-online.target mariadb.service
 Wants=network-online.target

@@ -1,5 +1,8 @@
 # ci.yml
 #
+# v0.0.12:
+#   - install OpenSSL headers and test TLS/bounded transports on Debian 13
+#
 # v0.0.11:
 #   - install libargon2-dev and run active anti-abuse tests on Debian 13
 #
@@ -35,7 +38,7 @@ jobs:
       - name: Install CI prerequisites
         run: |
           apt-get update
-          apt-get install -y git ca-certificates build-essential cmake pkg-config libmariadb-dev libgcrypt20-dev libargon2-dev shellcheck
+          apt-get install -y git ca-certificates build-essential cmake pkg-config libmariadb-dev libgcrypt20-dev libargon2-dev libssl-dev openssl shellcheck
 
       - name: Checkout
         uses: actions/checkout@v4

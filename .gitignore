@@ -1,10 +1,14 @@
 # dc24h.eu
+# v0.0.12:
+#   - ignore release-specific out-of-tree build directories
+#
 # v0.0.01:
 #   - initial build/output ignore rules
 # Author: gpt-5.6-sol
 # Date: 2026-08-19
 
 /build/
+/build-*/
 /cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
