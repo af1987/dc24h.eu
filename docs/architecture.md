@@ -1,6 +1,11 @@
 <!--
 architecture.md
 
+v0.0.11:
+  - adopt Argon2id with read-only legacy verification and automatic upgrade
+  - add active IP, reconnect, password-failure and clone protections
+  - document bounded runtime controls and OWASP rationale
+
 v0.0.10:
   - add tagged MD5/PBKDF2 password verification architecture
   - centralize deny-by-default RBAC command authorization
@@ -36,18 +41,18 @@ v0.0.04:
   - add passwordless accounts and private class listing
 
 Author: gpt-5.6-sol
-Date: 2026-08-21
+Date: 2026-08-22
 -->
 
-# Architecture — dc24h.eu-v0.0.10
+# Architecture — dc24h.eu-v0.0.11
 
 ## Baseline
 
 `dc24h.eu` is a C++20 Direct Connect hub for Debian 13. It implements the ADC
 1.0.4 BASE/TIGR profile, validates UTF-8, stores persistent state in MariaDB
-`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.10
-retains the protected per-hub home and adds tagged password compatibility,
-central RBAC command mediation and reverse-hostname ban targets.
+`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.11
+retains the protected per-hub home and adds Argon2id password storage plus
+layered connection-abuse controls.
 
 ## Runtime flow
 
@@ -59,14 +64,18 @@ central RBAC command mediation and reverse-hostname ban targets.
    all seven required options, file type and safe permissions. `Database` then
    asks MariaDB Connector/C to read that option file, connects with `utf8mb4`
    and applies idempotent schema updates.
-4. `Server` listens on IPv4 TCP port 1511 by default, checks active address,
+4. `Server` listens on IPv4 TCP port 1511 by default. `AntiAbuse` rejects a
+   current temporary ban, an over-limit source address or a reconnect inside
+   the configured interval before database and DNS admission work. The server
+   then checks active address,
    range and (when configured by an active entry) reverse-hostname bans after
    accept, and allocates a four-character ADC SID.
 5. `AdcProtocol` negotiates BASE/TIGR in SUP, validates UTF-8/escaping, TIGR
    PID/CID identity, unique INF names and B/D/E/F routing. BINF `SU` is not
    required to repeat SUP features.
 6. Before NORMAL, the server checks active nickname, CID, address, range, host,
-   prefix and share targets. A database lookup failure rejects admission.
+   prefix and share targets, `mAuthIP`, and the configured AP/VE clone count. A
+   database lookup failure rejects admission.
 7. NORMAL-state `BMSG` text beginning with `!set `, `+passwd ` or `+regme ` is intercepted before broadcast.
 8. The server validates the loopback boundary, maps the parsed action through
    central deny-by-default RBAC, applies contextual class/capability rules, then
@@ -79,8 +88,10 @@ central RBAC command mediation and reverse-hostname ban targets.
 
 - `src/adc.cpp` / `src/adc.hpp`: ADC parsing, state machine and routing decisions.
 - `src/hash.cpp` / `src/hash.hpp`: ADC Base32 and TIGR identity derivation.
-- `src/user.cpp` / `src/user.hpp`: canonical numeric classes, tagged MD5 default
-  hashing and MD5/PBKDF2-SHA256 verification.
+- `src/user.cpp` / `src/user.hpp`: canonical numeric classes, Argon2id password
+  writes, legacy MD5/PBKDF2 verification and upgrade detection.
+- `src/anti_abuse.cpp` / `src/anti_abuse.hpp`: temporary IP bans, independent
+  failure windows, connection/reconnect limits, `mAuthIP` and clone accounting.
 - `src/rbac.cpp` / `src/rbac.hpp`: command permissions, minimum class hierarchy
   and deny-by-default authorization decisions.
 - `src/hub_settings.cpp` / `src/hub_settings.hpp`: canonical policy keys, normalization and nickname checks.
@@ -98,7 +109,7 @@ central RBAC command mediation and reverse-hostname ban targets.
 - `scripts/install.sh`: creates the hub home, migrates runtime configuration,
   securely creates or reuses protected MariaDB options, validates the staged
   deployment and installs/restarts the service.
-- `src/version.cpp` / `src/version.hpp`: `0.0.10`, release identity, author and date.
+- `src/version.cpp` / `src/version.hpp`: `0.0.11`, release identity, author and date.
 
 Every production and test `*.cpp` has a matching `*.hpp` and vice versa.
 
@@ -162,13 +173,25 @@ minimum/maximum and kick/ban invariants, then commits the upsert or rolls back.
 This row locking coordinates the daemon and separate CLI processes rather than
 relying only on an in-process mutex.
 
-New password writes use tagged MD5 by explicit compatibility requirement.
-Verification supports both `md5$…` and the existing salted
-PBKDF2-HMAC-SHA256 format with 210000 iterations. Malformed or untagged hashes
-fail closed and digest comparison is constant-time. Plaintext passwords and
-hashes are never returned in command messages. MD5 is not a safe modern
-password-storage algorithm; the stronger PBKDF2 generator remains available
-for explicit use.
+New password writes use the standard Argon2id PHC representation with a
+16-byte random salt and OWASP's minimum `m=19456 KiB`, `t=2`, `p=1` profile.
+Verification accepts legacy tagged `md5$…` and PBKDF2-HMAC-SHA256 records only
+to migrate them: after a successful check, the same row is conditionally
+updated to Argon2id. Malformed or untagged hashes fail closed. Plaintext
+passwords and hashes are never returned in command messages, and new MD5
+records cannot be created.
+
+## Connection-abuse model
+
+`AntiAbuse` owns synchronized monotonic-clock state. `AddIPTempBan()` stores an
+expiry and generic reason; `LoginError()` uses independent per-account and
+per-IP sliding windows and applies `pwd_tmpban` after the configured threshold.
+`CntConnIP()` enforces `max_users_from_ip`; disconnect timestamps trigger a
+temporary ban with reason `Reconnecting too fast`. `CheckUserClone()` counts
+equal AP/VE fingerprints per source IP when `clone_detect_count` is nonzero and
+releases its count on disconnect. `mAuthIP()` admits an unbound account or an
+exact configured address only. All durations and counts are bounded during
+configuration loading.
 
 Removal, disabling and permanent class demotion query the target while holding the database mutex. If the operation would eliminate the final enabled Master (10), it is rejected.
 
@@ -207,7 +230,7 @@ Account information comes from MariaDB. IP and hostname information comes only f
 
 ## Trust boundaries
 
-ADC VERIFY (`GPA`/`PAS`) is not implemented in v0.0.10. In-hub management
+ADC VERIFY (`GPA`/`PAS`) is not implemented in v0.0.11. In-hub management
 commands therefore require IPv4 loopback plus the configured class/capability
 boundary. `+passwd` and enabled `+regme` are explicit self-service exceptions;
 account IP binding and active moderation entries are enforced during
@@ -249,18 +272,18 @@ locking protects a complete settings update across the daemon and CLI
 connections. Socket writes use duplicated descriptors outside state locks and
 fail closed without blocking on client backpressure. DNS is executed outside
 the clients lock. The target deployment is Debian 13 with systemd, MariaDB,
-libmariadb and libgcrypt.
+libmariadb, libgcrypt and libargon2.
 
-See ADR-0014 for password compatibility, RBAC and host-ban decisions. ADR-0013
+See ADR-0015 for Argon2id and connection-abuse decisions. ADR-0014 remains the
+historical password compatibility, RBAC and host-ban decision. ADR-0013
 remains authoritative for the protected home and local administration;
 ADR-0012 remains authoritative for the rest of kick/ban admission.
 
-## v0.0.10 verification
+## v0.0.11 verification
 
-Debian 13 warnings-as-errors Release build and CTest passed 8/8. Repeated
-MariaDB 11.8 schema application retained 30 settings and the hostname target
-constraint; a live hostname ban returned ADC status 230 and was soft-revoked.
-The active v0.0.10 systemd unit passed verification with exposure score 3.0.
-Real `ncdc 1.23.1` completed ADC/TIGR login, echoed the release marker,
-reconnected after restart and echoed the post-restart marker. Local policy
-scans passed; GitHub CI for PR #10 remains the final remote merge gate.
+Debian 13 warnings-as-errors Release build and CTest pass 9/9. The focused test
+covers password bans, address binding, per-IP limits, reconnect throttling and
+clone detection; password regression covers Argon2id and legacy reads. MariaDB
+11.8 retained 30 canonical settings, the installed systemd unit is active with
+exposure score 3.0, and real `ncdc 1.23.1` echoed both the connection and
+post-restart markers. The release manifest records the complete validation.

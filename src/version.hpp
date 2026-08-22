@@ -3,6 +3,10 @@
 
     - canonical runtime version metadata API
 
+        v0.0.11:
+            - raise canonical release metadata to dc24h.eu-v0.0.11
+            - record gpt-5.6-sol / 2026-08-22 provenance
+
         v0.0.10:
             - raise canonical release metadata to dc24h.eu-v0.0.10
 
@@ -37,7 +41,7 @@
             - add canonical program, release and author metadata
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 // ----------------------------------// DECLARATION //--

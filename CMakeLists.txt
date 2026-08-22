@@ -1,5 +1,9 @@
 # CMakeLists.txt
 #
+# v0.0.11:
+#   - raise CMake project version to 0.0.11
+#   - link Argon2id and build paired anti-abuse enforcement/tests
+#
 # v0.0.10:
 #   - raise CMake project version to 0.0.10
 #   - build the paired central RBAC module
@@ -48,11 +52,11 @@
 #   - install binary, example configuration and systemd unit
 #
 # Author: gpt-5.6-sol
-# Date: 2026-08-21
+# Date: 2026-08-22
 
 cmake_minimum_required(VERSION 3.25)
 
-project(dc24h VERSION 0.0.10 LANGUAGES CXX)
+project(dc24h VERSION 0.0.11 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -62,6 +66,7 @@ find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
 pkg_check_modules(MARIADB REQUIRED IMPORTED_TARGET libmariadb)
 pkg_check_modules(GCRYPT REQUIRED IMPORTED_TARGET libgcrypt)
+pkg_check_modules(ARGON2 REQUIRED IMPORTED_TARGET libargon2)
 
 set(DC24H_WARNING_FLAGS
     -Wall
@@ -84,6 +89,8 @@ add_executable(dc24h.eu
     src/hash.hpp
     src/user.cpp
     src/user.hpp
+    src/anti_abuse.cpp
+    src/anti_abuse.hpp
     src/rbac.cpp
     src/rbac.hpp
     src/hub_settings.cpp
@@ -102,6 +109,7 @@ target_include_directories(dc24h.eu PRIVATE src)
 target_link_libraries(dc24h.eu PRIVATE
     PkgConfig::MARIADB
     PkgConfig::GCRYPT
+    PkgConfig::ARGON2
     Threads::Threads
 )
 target_compile_options(dc24h.eu PRIVATE ${DC24H_WARNING_FLAGS})
@@ -130,6 +138,7 @@ target_include_directories(dc24h-settings PRIVATE src)
 target_link_libraries(dc24h-settings PRIVATE
     PkgConfig::MARIADB
     PkgConfig::GCRYPT
+    PkgConfig::ARGON2
     Threads::Threads
 )
 target_compile_options(dc24h-settings PRIVATE ${DC24H_WARNING_FLAGS})
@@ -181,6 +190,7 @@ if(BUILD_TESTING)
     target_link_libraries(dc24h_user_tests PRIVATE
         PkgConfig::MARIADB
         PkgConfig::GCRYPT
+        PkgConfig::ARGON2
         Threads::Threads
     )
     target_compile_options(dc24h_user_tests PRIVATE
@@ -188,6 +198,19 @@ if(BUILD_TESTING)
         -UNDEBUG
     )
     add_test(NAME user_classes_and_set_commands COMMAND dc24h_user_tests)
+
+    add_executable(dc24h_anti_abuse_tests
+        tests/anti_abuse_tests.cpp
+        tests/anti_abuse_tests.hpp
+        src/anti_abuse.cpp
+        src/anti_abuse.hpp
+    )
+    target_include_directories(dc24h_anti_abuse_tests PRIVATE src tests)
+    target_compile_options(dc24h_anti_abuse_tests PRIVATE
+        ${DC24H_WARNING_FLAGS}
+        -UNDEBUG
+    )
+    add_test(NAME active_anti_abuse_controls COMMAND dc24h_anti_abuse_tests)
 
     add_executable(dc24h_config_tests
         tests/config_tests.cpp

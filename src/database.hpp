@@ -3,6 +3,9 @@
 
     - MariaDB persistence API
 
+        v0.0.11:
+            - migrate verified legacy password hashes to Argon2id
+
         v0.0.10:
             - expose active hostname-ban discovery and matching
             - extend admission checks with normalized reverse hostnames
@@ -46,7 +49,7 @@
             - serialize access to the MariaDB C connection
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 // ----------------------------------// DECLARATION //--

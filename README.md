@@ -1,6 +1,11 @@
 <!--
 README.md
 
+v0.0.11:
+  - raise project description to dc24h.eu-v0.0.11
+  - replace MD5 writes with Argon2id and legacy login-time migration
+  - add active password/IP/reconnect/clone abuse protections
+
 v0.0.10:
   - raise project description to dc24h.eu-v0.0.10
   - add tagged MD5 password compatibility and dual verification
@@ -45,12 +50,12 @@ v0.0.01:
   - initial ADC/C++/MariaDB/Debian 13/systemd project overview
 
 Author: gpt-5.6-sol
-Date: 2026-08-21
+Date: 2026-08-22
 -->
 
 # dc24h.eu
 
-`dc24h.eu-v0.0.10` is a C++20 Direct Connect ADC hub for Debian 13.
+`dc24h.eu-v0.0.11` is a C++20 Direct Connect ADC hub for Debian 13.
 
 ## Baseline
 
@@ -68,7 +73,7 @@ Date: 2026-08-21
 - Default ADC TCP port: 1511
 - Reverse DNS: disabled by default (`dns_lookup=0`)
 - Author: `gpt-5.6-sol`
-- Release date: `2026-08-21`
+- Release date: `2026-08-22`
 
 ## User management keys
 
@@ -137,12 +142,23 @@ environment variable or command argument.
 | 5 | Admin user |
 | 10 | Master user |
 
-New passwords use the requested tagged MD5 compatibility format by default;
-verification also accepts existing tagged PBKDF2-HMAC-SHA256 hashes.
+New passwords use Argon2id with the OWASP minimum profile (`m=19456 KiB`,
+`t=2`, `p=1`) and a unique random salt. Verification remains read-compatible
+with tagged PBKDF2-HMAC-SHA256 and MD5 records; a successful legacy
+verification atomically replaces that record with Argon2id.
 Passwordless registrations store `NULL` in `accounts.password_hash` until
-`key.user.new.id.password` assigns the first password. MD5 is fast and
-unsalted, so it is not recommended for production password protection;
-PBKDF2-SHA256 remains available through explicit algorithm selection.
+`key.user.new.id.password` assigns the first password. New MD5 hashes are never
+created.
+
+## Active anti-abuse controls
+
+`anti_abuse.cpp` / `anti_abuse.hpp` enforce temporary IP bans
+(`AddIPTempBan`, `pwd_tmpban`, `LoginError`), independent password-failure
+counters, account IP authorization (`mAuthIP`), per-IP session limits
+(`max_users_from_ip`, `CntConnIP`), reconnect throttling with reason
+`Reconnecting too fast`, and configurable client clone detection
+(`CheckUserClone`, `clone_detect_count`, `clone_det_tban_time`,
+`clone_ip_tban_time`). Defaults are active in `dc24h.conf.example`.
 
 ## RBAC and authorization
 
@@ -162,13 +178,12 @@ the stronger network boundary because reverse DNS is not authenticated.
 
 The management trust boundary remains loopback-only (`127.0.0.1`) because ADC VERIFY (`GPA`/`PAS`) is not implemented. Timed policies persist in MariaDB with UTC expiry and are enforced before ADC routing. Delegated registration is capped at class 1.
 
-The v0.0.10 Debian 13 warnings-as-errors Release build and CTest passed 8/8.
-Repeated MariaDB schema migration, a live hostname-ban rejection, systemd unit
-verification/exposure score 3.0, real `ncdc 1.23.1` echo/reconnect and local
-history/pair/forbidden-name scans also passed. GitHub CI for PR #10 is the final
-remote merge gate.
+The v0.0.11 Debian 13 warnings-as-errors Release build and CTest pass 9/9,
+including focused Argon2id and active anti-abuse tests. MariaDB retained 30
+canonical settings, the installed systemd unit is active at exposure score 3.0,
+and real `ncdc 1.23.1` echoed both connection and post-restart markers.
 
 See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`,
-`docs/dc24h.eu-v0.0.10.md`,
-`docs/adr/0014-password-hashing-rbac-host-bans.md` and the earlier deployment
-ADR-0013.
+`docs/dc24h.eu-v0.0.11.md`,
+`docs/adr/0015-argon2id-and-connection-abuse-protection.md`, ADR-0014 and the
+earlier deployment ADR-0013.

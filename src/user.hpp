@@ -1,6 +1,10 @@
 /*
     user.hpp
 
+    v0.0.11:
+        - make Argon2id the only algorithm used for new password hashes
+        - retain explicit legacy hash identification for safe migration
+
     v0.0.10:
         - define MD5 and PBKDF2-SHA256 password hash algorithms
         - make tagged MD5 the requested default while retaining PBKDF2 verification
@@ -11,7 +15,7 @@
         - add PBKDF2-SHA256 password hashing helpers
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-22
 */
 
 #pragma once
@@ -35,7 +39,7 @@ enum class UserClass : std::int16_t {
 };
 
 enum class PasswordHashAlgorithm {
-    md5,
+    argon2id,
     pbkdf2_sha256
 };
 
@@ -54,8 +58,9 @@ std::string_view password_hash_algorithm_name(
     PasswordHashAlgorithm algorithm) noexcept;
 std::string hash_password(
     std::string_view password,
-    PasswordHashAlgorithm algorithm = PasswordHashAlgorithm::md5);
+    PasswordHashAlgorithm algorithm = PasswordHashAlgorithm::argon2id);
 bool verify_password(std::string_view password,
                      std::string_view encoded_hash) noexcept;
+bool password_hash_needs_upgrade(std::string_view encoded_hash) noexcept;
 
 }  // namespace dc24h

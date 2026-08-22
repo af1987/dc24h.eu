@@ -1,6 +1,10 @@
 <!--
 install.md
 
+v0.0.11:
+  - install libargon2 and the 0.0.11 active anti-abuse release
+  - document runtime limits and ncdc connection validation
+
 v0.0.10:
   - install the 0.0.10 password, RBAC and hostname-ban release
   - document moderation constraint migration and ncdc release validation
@@ -45,7 +49,7 @@ v0.0.01:
   - add Debian 13 build, MariaDB and systemd installation procedure
 
 Author: gpt-5.6-sol
-Date: 2026-08-21
+Date: 2026-08-22
 -->
 
 # Installation — Debian 13
@@ -55,15 +59,15 @@ Date: 2026-08-21
 Run on Debian 13 with root/sudo access and network access to Debian package repositories.
 
 The build requires a C++20 compiler, CMake, pkg-config, MariaDB Connector/C
-development files, libgcrypt development files, MariaDB server, ShellCheck and
-`en_US.UTF-8` locale support.
+development files, libgcrypt and libargon2 development files, MariaDB server,
+ShellCheck and `en_US.UTF-8` locale support.
 
 ## Automated install
 
 ```bash
 git clone https://github.com/af1987/dc24h.eu.git
 cd dc24h.eu
-git checkout agent/dc24h-v0.0.10
+git checkout agent/dc24h-v0.0.11
 sudo ./scripts/install.sh
 ```
 
@@ -107,7 +111,7 @@ the deployment sequence is:
 ## Installed hub home
 
 The text `nazwa-huba` is a placeholder for one validated instance-name segment;
-it is not a literal directory. The v0.0.10 instance is exactly:
+it is not a literal directory. The v0.0.11 instance is exactly:
 
 `/var/lib/dc24h.eu/dc24h.eu`
 
@@ -134,6 +138,15 @@ max_clients=1024
 locale=en_US.UTF-8
 dns_lookup=0
 
+pwd_tmpban=900
+password_failure_limit=5
+password_failure_window=300
+max_users_from_ip=10
+reconnect_min_interval=2
+clone_detect_count=3
+clone_det_tban_time=600
+clone_ip_tban_time=900
+
 database_config=database.cnf
 ```
 
@@ -159,9 +172,9 @@ against that file's directory rather than the caller's working directory.
 Inline `database_*` options remain readable only for legacy migration and must
 not be mixed with `database_config`.
 
-## Database and configuration migration for v0.0.10
+## Database and configuration migration for v0.0.11
 
-v0.0.10 adds no application table or setting seed. The installer reapplies the
+v0.0.11 keeps the existing application tables and setting seed. The installer reapplies the
 complete idempotent schema, extends the append-oriented moderation constraint
 with `host`, and retains the existing 30 settings:
 
@@ -408,10 +421,17 @@ Passwords may contain dots; the parser consumes only the required leading separa
 
 ## Password and RBAC checks
 
-New password writes are stored as tagged `md5$…` values by compatibility
-requirement. Existing tagged PBKDF2-SHA256 hashes continue to verify. MD5 is
-not a secure modern password-storage choice; use explicit PBKDF2 generation for
-production accounts until the project adopts a memory-hard default.
+New password writes use standard Argon2id PHC strings with `m=19456 KiB`,
+`t=2`, `p=1` and a 16-byte random salt. Existing tagged MD5 and
+PBKDF2-SHA256 records remain readable only for migration; a successful check
+conditionally replaces the stored value with Argon2id.
+
+The runtime anti-abuse keys are validated on startup. `pwd_tmpban` controls a
+temporary source-address ban after `password_failure_limit` failures inside
+`password_failure_window`. `max_users_from_ip` caps concurrent sessions,
+`reconnect_min_interval` rejects rapid reconnects, and clone detection is
+enabled when `clone_detect_count` is nonzero. The two clone durations bound
+detection memory and the resulting IP ban.
 
 Every parsed command is authorized before execution. Operator (3) can perform
 bounded registration, view protected account/moderation information and
@@ -436,7 +456,7 @@ sudo journalctl -u dc24h.service -f
 ```bash
 sudo apt-get update
 sudo apt-get install -y build-essential cmake pkg-config libmariadb-dev \
-  libgcrypt20-dev shellcheck
+  libgcrypt20-dev libargon2-dev shellcheck
 
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
@@ -462,17 +482,17 @@ ncdc -c "${GUEST_SESSION_DIR}" -n
 In the first `ncdc` session:
 
 ```text
-/set nick V010Master
-/open dc24h-v010 adc://127.0.0.1:1511/
-/say ncdc-v0.0.10-connection-test
+/set nick V011Master
+/open dc24h-v011 adc://127.0.0.1:1511/
+/say ncdc-v0.0.11-connection-test
 ```
 
 In the second session, use a different persistent client identity:
 
 ```text
-/set nick V010Guest
-/open dc24h-v010 adc://127.0.0.1:1511/
-/say ncdc-v0.0.10-connection-test
+/set nick V011Guest
+/open dc24h-v011 adc://127.0.0.1:1511/
+/say ncdc-v0.0.11-connection-test
 ```
 
 For reproduction, require both clients to complete ADC/TIGR identification,
@@ -482,26 +502,27 @@ isolated release database, also change a setting with
 restore the default, restart `dc24h.service`, reconnect and repeat the echo.
 BASE/TIGR remain negotiated in SUP and TIGR PID/CID validation remains active.
 
-The v0.0.10 release test uses Debian 13 and a real `ncdc` client. It must
-complete ADC/TIGR identification and echo `ncdc-v0.0.10-connection-test`; after
-a service restart it must reconnect and echo `ncdc-v0.0.10-after-restart`. The
+The v0.0.11 release test uses Debian 13 and a real `ncdc` client. It must
+complete ADC/TIGR identification and echo `ncdc-v0.0.11-connection-test`; after
+a service restart it must reconnect and echo `ncdc-v0.0.11-after-restart`. The
 v0.0.08 historical moderation validation remains recorded in its own release
 documents.
 
-## v0.0.10 validation record
+## v0.0.11 validation record
 
 - A clean Release build with warnings treated as errors completed; CTest,
-  including ShellCheck, passed 8/8.
+  including ShellCheck and active anti-abuse coverage, passed 9/9.
 - MariaDB 11.8 schema application completed repeatedly; all 30 canonical
   setting rows remained present and `dc24h-settings ... check` passed.
 - The moderation constraint accepted `host`. A live `localhost` host ban denied
   admission with ADC status 230 and was soft-revoked after the check.
 - The systemd unit passed verification; `systemd-analyze security` reported
-  exposure score `3.0`, and the installed v0.0.10 service remained active.
+  exposure score `3.0`, and the installed v0.0.11 service remained active.
 - Real `ncdc 1.23.1` completed ADC/TIGR identification, echoed the release
-  marker, reconnected after restart and echoed the post-restart marker.
+  marker `ncdc-v0.0.11-connection-test`, reconnected after restart and echoed
+  `ncdc-v0.0.11-after-restart`.
 - Local forbidden-name, C++ pair, history and diff scans passed.
-- Remote GitHub CI is the required final merge gate for PR #10.
+- Remote GitHub CI is the required final merge gate for PR #11.
 
 ## MariaDB
 
@@ -514,7 +535,7 @@ an administrator reset.
 
 ## Network
 
-The default ADC listener is TCP port `1511`. v0.0.10 remains IPv4-only.
+The default ADC listener is TCP port `1511`. v0.0.11 remains IPv4-only.
 Administrative `!set` paths remain restricted to `127.0.0.1`; `+passwd` and
 explicitly enabled `+regme` are self-service exceptions. The separate local
 settings CLI requires root and the protected hub-home contract.

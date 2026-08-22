@@ -1,6 +1,9 @@
 /*
     user_commands_tests.cpp
 
+    v0.0.11:
+        - verify Argon2id defaults and read-only legacy hash compatibility
+
     v0.0.10:
         - verify tagged MD5 defaults and PBKDF2 compatibility
         - verify deny-by-default RBAC class/permission mappings
@@ -39,7 +42,7 @@
             - test PBKDF2 password hash verification
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 // ----------------------------------// DECLARATION //--
@@ -570,17 +573,21 @@ void run_user_command_tests() {
     assert(error == "invalid user class");
 
     const auto encoded = hash_password("StrongPass.123");
-    assert(encoded.starts_with("md5$"));
-    assert(encoded.size() == 36U);
+    assert(encoded.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"));
     assert(verify_password("StrongPass.123", encoded));
     assert(!verify_password("WrongPass.123", encoded));
-    assert(hash_password("password") ==
-           "md5$5f4dcc3b5aa765d61d8327deb882cf99");
+    assert(!password_hash_needs_upgrade(encoded));
+    constexpr std::string_view legacy_md5 =
+        "md5$5f4dcc3b5aa765d61d8327deb882cf99";
+    assert(verify_password("password", legacy_md5));
+    assert(!verify_password("wrong", legacy_md5));
+    assert(password_hash_needs_upgrade(legacy_md5));
     const auto pbkdf2 = hash_password(
         "StrongPass.123", PasswordHashAlgorithm::pbkdf2_sha256);
     assert(pbkdf2.starts_with("pbkdf2-sha256$"));
     assert(verify_password("StrongPass.123", pbkdf2));
     assert(!verify_password("WrongPass.123", pbkdf2));
+    assert(password_hash_needs_upgrade(pbkdf2));
     assert(!verify_password("StrongPass.123", "md5$not-hex"));
 
     assert(authorize_action(

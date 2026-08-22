@@ -1,6 +1,11 @@
 /*
     user.cpp
 
+    v0.0.11:
+        - replace MD5 generation with OWASP-profile Argon2id password hashing
+        - retain read-only MD5/PBKDF2 verification for login-time migration
+        - identify non-Argon2id records that require an upgrade
+
     v0.0.10:
         - add tagged MD5 password hashing as the compatibility default
         - verify tagged MD5 and existing PBKDF2-SHA256 hashes in constant time
@@ -12,11 +17,12 @@
         - add constant-time password hash verification
 
     Author: gpt-5.6-sol
-    Date: 2026-08-19
+    Date: 2026-08-22
 */
 
 #include "user.hpp"
 
+#include <argon2.h>
 #include <gcrypt.h>
 
 #include <array>
@@ -36,6 +42,10 @@ constexpr std::size_t digest_size = 32U;
 constexpr unsigned long pbkdf2_iterations = 210000UL;
 constexpr std::string_view md5_password_prefix = "md5";
 constexpr std::string_view pbkdf2_password_prefix = "pbkdf2-sha256";
+constexpr std::uint32_t argon2_time_cost = 2U;
+constexpr std::uint32_t argon2_memory_cost_kib = 19456U;
+constexpr std::uint32_t argon2_parallelism = 1U;
+constexpr std::string_view argon2_password_prefix = "$argon2id$";
 
 void ensure_gcrypt_initialized() {
     static std::once_flag flag;
@@ -141,6 +151,38 @@ std::vector<unsigned char> md5_password(std::string_view password) {
     return digest;
 }
 
+std::string argon2id_password(std::string_view password) {
+    ensure_gcrypt_initialized();
+    std::array<unsigned char, salt_size> salt{};
+    gcry_randomize(salt.data(), salt.size(), GCRY_STRONG_RANDOM);
+
+    const std::size_t encoded_size = argon2_encodedlen(
+        argon2_time_cost,
+        argon2_memory_cost_kib,
+        argon2_parallelism,
+        salt.size(),
+        digest_size,
+        Argon2_id);
+    std::vector<char> encoded(encoded_size);
+    const int result = argon2id_hash_encoded(
+        argon2_time_cost,
+        argon2_memory_cost_kib,
+        argon2_parallelism,
+        password.data(),
+        password.size(),
+        salt.data(),
+        salt.size(),
+        digest_size,
+        encoded.data(),
+        encoded.size());
+    if (result != ARGON2_OK) {
+        throw std::runtime_error(
+            "Argon2id password hashing failed: " +
+            std::string(argon2_error_message(result)));
+    }
+    return encoded.data();
+}
+
 }  // namespace
 
 bool is_valid_user_class(std::int16_t value) noexcept {
@@ -178,7 +220,7 @@ std::string_view user_class_name(UserClass user_class) noexcept {
 std::string_view password_hash_algorithm_name(
     PasswordHashAlgorithm algorithm) noexcept {
     switch (algorithm) {
-        case PasswordHashAlgorithm::md5: return md5_password_prefix;
+        case PasswordHashAlgorithm::argon2id: return "argon2id";
         case PasswordHashAlgorithm::pbkdf2_sha256:
             return pbkdf2_password_prefix;
     }
@@ -192,10 +234,8 @@ std::string hash_password(std::string_view password,
             "password length must be between 8 and 1024 UTF-8 bytes");
     }
 
-    if (algorithm == PasswordHashAlgorithm::md5) {
-        const auto digest = md5_password(password);
-        return std::string(md5_password_prefix) + "$" +
-            to_hex(digest.data(), digest.size());
+    if (algorithm == PasswordHashAlgorithm::argon2id) {
+        return argon2id_password(password);
     }
 
     if (algorithm != PasswordHashAlgorithm::pbkdf2_sha256) {
@@ -220,6 +260,13 @@ std::string hash_password(std::string_view password,
 bool verify_password(std::string_view password,
                      std::string_view encoded_hash) noexcept {
     try {
+        if (encoded_hash.starts_with(argon2_password_prefix)) {
+            const std::string encoded(encoded_hash);
+            return argon2id_verify(
+                       encoded.c_str(), password.data(), password.size()) ==
+                   ARGON2_OK;
+        }
+
         const auto first = encoded_hash.find('$');
         if (first == std::string_view::npos) {
             return false;
@@ -268,6 +315,10 @@ bool verify_password(std::string_view password,
     } catch (...) {
         return false;
     }
+}
+
+bool password_hash_needs_upgrade(std::string_view encoded_hash) noexcept {
+    return !encoded_hash.starts_with(argon2_password_prefix);
 }
 
 }  // namespace dc24h

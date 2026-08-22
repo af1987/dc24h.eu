@@ -1,5 +1,9 @@
 # dc24h.service
 #
+# v0.0.11:
+#   - raise service description to dc24h.eu-v0.0.11
+#   - retain Debian 13 systemd sandboxing for anti-abuse enforcement
+#
 # v0.0.10:
 #   - raise service description to dc24h.eu-v0.0.10
 #   - retain systemd hardening and the protected per-hub home
@@ -43,10 +47,10 @@
 #   - set en_US.UTF-8 runtime locale
 #
 # Author: gpt-5.6-sol
-# Date: 2026-08-21
+# Date: 2026-08-22
 
 [Unit]
-Description=dc24h.eu Direct Connect ADC Hub v0.0.10
+Description=dc24h.eu Direct Connect ADC Hub v0.0.11
 Documentation=https://github.com/af1987/dc24h.eu
 After=network-online.target mariadb.service
 Wants=network-online.target

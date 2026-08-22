@@ -1,6 +1,9 @@
 /*
     user_commands_tests.hpp
 
+    v0.0.11:
+        - declare Argon2id migration regression coverage
+
     v0.0.08:
         - declare complete moderation setting, parser and matcher regressions
 
@@ -17,7 +20,7 @@
         - declare focused user class, !set parser and password hashing tests
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 #pragma once

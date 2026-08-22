@@ -1,6 +1,9 @@
 /*
     config.hpp
 
+    v0.0.11:
+        - add validated anti-abuse and temporary-ban runtime settings
+
     v0.0.09:
         - add a separate MariaDB option-file path to the runtime model
         - keep legacy inline database keys available for safe migration
@@ -13,10 +16,12 @@
         - add UTF-8 configuration loader interface
 
     Author: gpt-5.6-sol
-    Date: 2026-08-21
+    Date: 2026-08-22
 */
 
 #pragma once
+
+#include "anti_abuse.hpp"
 
 #include <cstdint>
 #include <string>
@@ -31,6 +36,7 @@ struct Config {
     std::size_t max_clients{1024};
     std::string locale{"en_US.UTF-8"};
     bool dns_lookup{false};
+    AntiAbuseSettings anti_abuse;
 
     std::string database_config_path;
     std::string database_host{"127.0.0.1"};
