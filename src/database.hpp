@@ -3,6 +3,10 @@
 
     - MariaDB persistence API
 
+        v0.0.10:
+            - expose active hostname-ban discovery and matching
+            - extend admission checks with normalized reverse hostnames
+
         v0.0.09:
             - expose validated hub-setting list/read operations for the local editor
             - make setting updates transaction-safe across daemon and CLI processes
@@ -164,6 +168,8 @@ public:
     AddPasswordResult add_user_password_if_missing(
         std::string_view username,
         std::string_view password_hash);
+    bool verify_user_password(std::string_view username,
+                              std::string_view password);
     std::vector<UserListEntry> users_by_class(UserClass user_class);
     std::optional<UserDetails> user_details(std::string_view username);
     AccountChangeResult remove_user(std::string_view username);
@@ -204,7 +210,9 @@ public:
         std::string_view nickname,
         std::string_view cid,
         std::string_view ipv4,
-        std::optional<std::uint64_t> share_size);
+        std::optional<std::uint64_t> share_size,
+        std::string_view hostname = {});
+    bool has_active_hostname_bans();
     std::optional<ModerationEntry> moderation_entry(std::uint64_t id);
     std::vector<ModerationEntry> moderation_entries(
         ModerationAction action,

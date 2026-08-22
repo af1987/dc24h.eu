@@ -1,6 +1,11 @@
 <!--
 README.md
 
+v0.0.10:
+  - raise project description to dc24h.eu-v0.0.10
+  - add tagged MD5 password compatibility and dual verification
+  - add centralized RBAC and hostname ban targets
+
 v0.0.09:
   - raise project description to dc24h.eu-v0.0.09
   - add the protected per-hub home and split MariaDB configuration
@@ -45,7 +50,7 @@ Date: 2026-08-21
 
 # dc24h.eu
 
-`dc24h.eu-v0.0.09` is a C++20 Direct Connect ADC hub for Debian 13.
+`dc24h.eu-v0.0.10` is a C++20 Direct Connect ADC hub for Debian 13.
 
 ## Baseline
 
@@ -80,7 +85,7 @@ Commands are sent through the existing protected hub-local `!set` command path a
 - Show all registered users in a class, including enabled state, in the private response:
   `!set key.user.info.userlist.class=[class]`
 
-The v0.0.08 command set added `key.kicks` (default rejoin delay), `key.bans`
+The moderation command set provides `key.kicks` (default rejoin delay), `key.bans`
 (maximum temporary duration), typed kick/ban operations and append-oriented
 MariaDB audit. Active address bans are checked after accept; nickname, ADC CID,
 prefix and share bans are checked before NORMAL. See
@@ -132,17 +137,38 @@ environment variable or command argument.
 | 5 | Admin user |
 | 10 | Master user |
 
-Passwords are persisted only as salted PBKDF2-HMAC-SHA256 hashes. Passwordless registrations store `NULL` in `accounts.password_hash` until `key.user.new.id.password` assigns the first password.
+New passwords use the requested tagged MD5 compatibility format by default;
+verification also accepts existing tagged PBKDF2-HMAC-SHA256 hashes.
+Passwordless registrations store `NULL` in `accounts.password_hash` until
+`key.user.new.id.password` assigns the first password. MD5 is fast and
+unsalted, so it is not recommended for production password protection;
+PBKDF2-SHA256 remains available through explicit algorithm selection.
+
+## RBAC and authorization
+
+Every parsed account/moderation command is mapped to an explicit permission in
+the paired `rbac.cpp` / `rbac.hpp` module and is denied by default when no
+mapping exists. Operator (3) can perform bounded registration, inspect users
+and moderate live sessions,
+Admin (5) can manage accounts and bans, and Master (10) is required for role
+changes and hub configuration. Existing class-difference rules and delegated
+capabilities add contextual restrictions; they do not bypass an unknown
+command denial.
+
+Ban targets now include exact or leading-wildcard reverse hostnames using
+`host`, for example
+`!set key.bans.add=[host|*.example.net|1d|Repeated abuse]`. IP/range bans remain
+the stronger network boundary because reverse DNS is not authenticated.
 
 The management trust boundary remains loopback-only (`127.0.0.1`) because ADC VERIFY (`GPA`/`PAS`) is not implemented. Timed policies persist in MariaDB with UTC expiry and are enforced before ADC routing. Delegated registration is capped at class 1.
 
-The v0.0.09 candidate was exercised on Debian 13.6 with a clean Release build
-using warnings as errors, CTest 8/8 including ShellCheck, repeated
-schema/install runs, all four settings operations, negative and concurrent
-setting updates, an active verified systemd unit and real `ncdc 1.23.1`
-ADC/TIGR echo/reconnect checks. Local forbidden-name, C++ pair and secret scans
-also passed. Remote GitHub CI remains the required final merge gate for PR #9.
+The v0.0.10 Debian 13 warnings-as-errors Release build and CTest passed 8/8.
+Repeated MariaDB schema migration, a live hostname-ban rejection, systemd unit
+verification/exposure score 3.0, real `ncdc 1.23.1` echo/reconnect and local
+history/pair/forbidden-name scans also passed. GitHub CI for PR #10 is the final
+remote merge gate.
 
 See `docs/readme.md`, `docs/architecture.md`, `docs/install.md`,
-`docs/dc24h.eu-v0.0.09.md` and
-`docs/adr/0013-per-hub-home-and-settings-administration.md`.
+`docs/dc24h.eu-v0.0.10.md`,
+`docs/adr/0014-password-hashing-rbac-host-bans.md` and the earlier deployment
+ADR-0013.

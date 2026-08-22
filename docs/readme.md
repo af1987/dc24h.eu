@@ -1,6 +1,10 @@
 <!--
 readme.md
 
+v0.0.10:
+  - index tagged password hashing, central RBAC and hostname bans
+  - point to ADR-0014 and the v0.0.10 release manifest
+
 v0.0.09:
   - index the protected per-hub home and split MariaDB configuration
   - point operations to ADR-0013 and the v0.0.09 release manifest
@@ -42,7 +46,7 @@ Date: 2026-08-21
 
 # dc24h.eu documentation
 
-This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.09`.
+This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.10`.
 
 ## Documents
 
@@ -50,7 +54,8 @@ This directory is the authoritative design and operations documentation for `dc2
 - `instructions.md` — permanent engineering, deployment security, versioning, ADR, password-security and C++ pair rules.
 - `changelog.md` — release history.
 - `install.md` — Debian 13 installation, hub-home settings administration, tests, systemd and first-Master bootstrap.
-- `dc24h.eu-v0.0.09.md` — current per-hub home and settings administration release manifest.
+- `dc24h.eu-v0.0.10.md` — current password, RBAC and hostname-ban release manifest.
+- `dc24h.eu-v0.0.09.md` — previous per-hub home and settings administration release manifest.
 - `dc24h.eu-v0.0.08.md` — previous kick/ban release manifest and command table.
 - `dc24h.eu-v0.0.07.md` — previous policy/account-key manifest.
 - `dc24h.eu-v0.0.06.md` — previous moderation and interoperability manifest.
@@ -79,7 +84,11 @@ This directory is the authoritative design and operations documentation for `dc2
 
 ## Current account profile
 
-Canonical numeric classes are `-1, 0, 1, 2, 3, 4, 5, 10`. Passwords are PBKDF2-HMAC-SHA256 hashes; an account may intentionally have `NULL` `password_hash` until its first password is assigned.
+Canonical numeric classes are `-1, 0, 1, 2, 3, 4, 5, 10`. New passwords use
+tagged MD5 by the v0.0.10 compatibility requirement; verification also accepts
+the existing tagged PBKDF2-HMAC-SHA256 format. MD5 is not recommended for
+secure password storage. An account may intentionally have `NULL`
+`password_hash` until its first password is assigned.
 
 Supported protected commands:
 
@@ -95,7 +104,7 @@ prefix or exact share. The command table is in `dc24h.eu-v0.0.08.md`;
 architectural decisions are in ADR-0012. ADC connectivity and moderation flows
 are validated with `ncdc`.
 
-v0.0.09 moves the installed service into
+v0.0.09 moved the installed service into
 `/var/lib/dc24h.eu/dc24h.eu`, separates MariaDB credentials into a strict
 Connector/C option file, and adds root-only `list`, `get`, `set` and `check`
 operations through `01-edit-hub-settings.sh` and `dc24h-settings`. See
@@ -105,3 +114,9 @@ executions and schema application, transactional settings cases, an
 active verified systemd unit, real `ncdc 1.23.1` ADC/TIGR echo/reconnect, and
 successful local forbidden-name, C++ pair and secret scans. Remote GitHub CI is
 the required final merge gate for PR #9.
+
+v0.0.10 centralizes command authorization in a deny-by-default RBAC module and
+adds exact/wildcard reverse-hostname bans. See `dc24h.eu-v0.0.10.md` and
+ADR-0014. Release checks passed for password/RBAC/host matchers, repeated schema
+migration, the active systemd unit and real `ncdc` ADC/TIGR echo/reconnect.
+GitHub CI remains the final gate for PR #10.

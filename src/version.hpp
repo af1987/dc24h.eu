@@ -3,6 +3,9 @@
 
     - canonical runtime version metadata API
 
+        v0.0.10:
+            - raise canonical release metadata to dc24h.eu-v0.0.10
+
         v0.0.09:
             - raise canonical release metadata to dc24h.eu-v0.0.09
 

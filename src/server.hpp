@@ -1,6 +1,10 @@
 /*
     server.hpp
 
+    v0.0.10:
+        - apply central RBAC to each parsed user command
+        - retain reverse hostnames only when active host bans require them
+
     v0.0.08:
         - serialize moderation writes with ADC admission decisions
         - serialize non-blocking socket writes outside client-state locks
@@ -45,6 +49,7 @@
 #include "adc.hpp"
 #include "config.hpp"
 #include "database.hpp"
+#include "rbac.hpp"
 #include "user_commands.hpp"
 
 #include <atomic>
@@ -75,6 +80,7 @@ private:
     struct ClientInfo {
         std::string sid;
         std::string remote_address;
+        std::string moderation_hostname;
         bool normal{false};
         std::map<std::string, std::string> inf_fields;
         std::unordered_set<std::string> features;
@@ -101,7 +107,9 @@ private:
     void expire_client_policies();
     std::optional<UserClass> temporary_class_for(
         std::string_view username) const;
-    std::string hostname_for_address(std::string_view address) const;
+    std::string hostname_for_address(
+        std::string_view address,
+        bool moderation_lookup = false) const;
     static std::optional<std::string> extract_bmsg_text(
         const std::string& message);
     static std::optional<std::string> decode_adc_value(

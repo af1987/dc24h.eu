@@ -3,6 +3,10 @@
 
     - typed kick and ban policy helpers
 
+        v0.0.10:
+            - normalize exact and leading-wildcard DNS host targets
+            - match hostnames case-insensitively during admission
+
         v0.0.08:
             - normalize nickname, CID, IPv4, range, prefix and share targets
             - parse bounded temporary durations and permanent bans
@@ -96,6 +100,48 @@ bool ascii_starts_with(std::string_view value,
         ascii_equal(value.substr(0, prefix.size()), prefix);
 }
 
+std::optional<std::string> normalize_hostname(std::string_view value) {
+    bool wildcard = false;
+    if (value.starts_with("*.")) {
+        wildcard = true;
+        value.remove_prefix(2U);
+    }
+    if (value.empty() || value.size() > 253U || value.back() == '.') {
+        return std::nullopt;
+    }
+
+    std::string output;
+    output.reserve(value.size() + (wildcard ? 2U : 0U));
+    if (wildcard) output = "*.";
+    std::size_t label_size = 0;
+    bool label_starts_with_hyphen = false;
+    for (const unsigned char character : value) {
+        if (character == '.') {
+            if (label_size == 0U || label_size > 63U ||
+                output.back() == '-' || label_starts_with_hyphen) {
+                return std::nullopt;
+            }
+            output.push_back('.');
+            label_size = 0U;
+            label_starts_with_hyphen = false;
+            continue;
+        }
+        const bool alphanumeric =
+            (character >= 'a' && character <= 'z') ||
+            (character >= 'A' && character <= 'Z') ||
+            (character >= '0' && character <= '9');
+        if (!alphanumeric && character != '-') return std::nullopt;
+        if (label_size == 0U) label_starts_with_hyphen = character == '-';
+        output.push_back(static_cast<char>(std::tolower(character)));
+        ++label_size;
+    }
+    if (label_size == 0U || label_size > 63U || output.back() == '-' ||
+        label_starts_with_hyphen) {
+        return std::nullopt;
+    }
+    return output;
+}
+
 std::optional<ModerationTarget> normalize_range(
     std::string_view value,
     std::string& error) {
@@ -162,6 +208,7 @@ std::string_view moderation_target_kind_name(
         case ModerationTargetKind::cid: return "cid";
         case ModerationTargetKind::ipv4: return "ip";
         case ModerationTargetKind::ipv4_range: return "range";
+        case ModerationTargetKind::hostname: return "host";
         case ModerationTargetKind::nickname_prefix: return "prefix";
         case ModerationTargetKind::share_size: return "share";
     }
@@ -175,6 +222,7 @@ std::optional<ModerationTargetKind> moderation_target_kind_from_name(
     if (value == "cid") return ModerationTargetKind::cid;
     if (value == "ip") return ModerationTargetKind::ipv4;
     if (value == "range") return ModerationTargetKind::ipv4_range;
+    if (value == "host") return ModerationTargetKind::hostname;
     if (value == "prefix") return ModerationTargetKind::nickname_prefix;
     if (value == "share") return ModerationTargetKind::share_size;
     return std::nullopt;
@@ -266,6 +314,16 @@ std::optional<ModerationTarget> normalize_ban_target(
         return target;
     }
     if (kind == "range") return normalize_range(value, error);
+    if (kind == "host") {
+        const auto hostname = normalize_hostname(value);
+        if (!hostname.has_value()) {
+            error = "host target must be an exact DNS name or *.domain wildcard";
+            return std::nullopt;
+        }
+        target.kind = ModerationTargetKind::hostname;
+        target.value = *hostname;
+        return target;
+    }
     if (kind == "prefix") {
         if (!printable_utf8(value, 64U, true)) {
             error = "nickname prefix must be 1..64 printable UTF-8 characters";
@@ -289,7 +347,7 @@ std::optional<ModerationTarget> normalize_ban_target(
         return target;
     }
 
-    error = "ban target kind must be nick, cid, ip, range, prefix or share";
+    error = "ban target kind must be nick, cid, ip, range, host, prefix or share";
     return std::nullopt;
 }
 
@@ -306,7 +364,8 @@ bool moderation_target_matches(
     std::string_view nickname,
     std::string_view cid,
     std::string_view ipv4,
-    std::optional<std::uint64_t> share_size) noexcept {
+    std::optional<std::uint64_t> share_size,
+    std::string_view hostname) noexcept {
     switch (target.kind) {
         case ModerationTargetKind::identity:
             return (!nickname.empty() && ascii_equal(target.value, nickname)) ||
@@ -323,6 +382,16 @@ bool moderation_target_matches(
             const auto last = ipv4_number(target.secondary_value);
             return address.has_value() && first.has_value() && last.has_value() &&
                 *address >= *first && *address <= *last;
+        }
+        case ModerationTargetKind::hostname: {
+            const auto normalized = normalize_hostname(hostname);
+            if (!normalized.has_value()) return false;
+            if (target.value.starts_with("*.")) {
+                const auto suffix = std::string_view(target.value).substr(1U);
+                return normalized->size() > suffix.size() &&
+                    normalized->ends_with(suffix);
+            }
+            return target.value == *normalized;
         }
         case ModerationTargetKind::nickname_prefix:
             return !nickname.empty() &&

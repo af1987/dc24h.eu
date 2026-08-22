@@ -1,6 +1,10 @@
 /*
     user.hpp
 
+    v0.0.10:
+        - define MD5 and PBKDF2-SHA256 password hash algorithms
+        - make tagged MD5 the requested default while retaining PBKDF2 verification
+
     v0.0.03:
         - add numeric user classes for hublist pingers and account roles
         - add canonical class validation and display names
@@ -30,6 +34,11 @@ enum class UserClass : std::int16_t {
     master = 10
 };
 
+enum class PasswordHashAlgorithm {
+    md5,
+    pbkdf2_sha256
+};
+
 struct UserAccount {
     std::uint64_t id{0};
     std::string username;
@@ -41,7 +50,11 @@ bool is_valid_user_class(std::int16_t value) noexcept;
 std::optional<UserClass> user_class_from_int(std::int16_t value) noexcept;
 std::string_view user_class_name(UserClass user_class) noexcept;
 
-std::string hash_password(std::string_view password);
+std::string_view password_hash_algorithm_name(
+    PasswordHashAlgorithm algorithm) noexcept;
+std::string hash_password(
+    std::string_view password,
+    PasswordHashAlgorithm algorithm = PasswordHashAlgorithm::md5);
 bool verify_password(std::string_view password,
                      std::string_view encoded_hash) noexcept;
 

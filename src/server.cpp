@@ -1,6 +1,11 @@
 /*
     server.cpp
 
+    v0.0.10:
+        - authorize every parsed command through the central RBAC policy
+        - deny commands without an explicit permission mapping
+        - resolve and enforce active hostname bans at admission
+
     v0.0.08:
         - enforce persistent kick and ban entries before ADC NORMAL
         - create moderation audit rows before disconnecting matched sessions
@@ -142,13 +147,19 @@ int Server::run(const std::atomic_bool& stop_requested) {
                         sizeof(address_buffer));
         const std::string remote_address =
             address != nullptr ? address : "unknown";
+        std::string moderation_hostname;
 
         try {
             std::optional<ModerationEntry> blocked;
             {
                 std::lock_guard moderation_lock(moderation_mutex_);
+                if (database_.has_active_hostname_bans()) {
+                    moderation_hostname =
+                        hostname_for_address(remote_address, true);
+                }
                 blocked = database_.active_moderation_match(
-                    {}, {}, remote_address, std::nullopt);
+                    {}, {}, remote_address, std::nullopt,
+                    moderation_hostname);
             }
             if (blocked.has_value()) {
                 send_all(client_fd, moderation_denial(*blocked));
@@ -178,6 +189,7 @@ int Server::run(const std::atomic_bool& stop_requested) {
             ClientInfo client;
             client.sid = sid;
             client.remote_address = remote_address;
+            client.moderation_hostname = moderation_hostname;
             clients_.emplace(client_fd, std::move(client));
         }
 
@@ -366,18 +378,24 @@ bool Server::finish_identification(
     RuntimeUserPolicy policy;
     HubSettings hub_settings;
     std::string remote_address;
+    std::string moderation_hostname;
     bool registered_account = false;
     {
         std::lock_guard lock(clients_mutex_);
         const auto current = clients_.find(client_fd);
         if (current == clients_.end()) return false;
         remote_address = current->second.remote_address;
+        moderation_hostname = current->second.moderation_hostname;
     }
     try {
         hub_settings = database_.hub_settings();
         if (!decoded_nick.has_value() || decoded_nick->empty()) {
             send_all(client_fd, "ISTA 223 Nick\\srequired\n");
             return false;
+        }
+        if (moderation_hostname.empty() &&
+            database_.has_active_hostname_bans()) {
+            moderation_hostname = hostname_for_address(remote_address, true);
         }
         std::string nickname_error;
         if (!nickname_allowed(*decoded_nick, hub_settings, nickname_error)) {
@@ -386,7 +404,8 @@ bool Server::finish_identification(
             return false;
         }
         const auto blocked = database_.active_moderation_match(
-            *decoded_nick, cid, remote_address, share_size);
+            *decoded_nick, cid, remote_address, share_size,
+            moderation_hostname);
         if (blocked.has_value()) {
             send_all(client_fd, moderation_denial(*blocked));
             return false;
@@ -745,6 +764,22 @@ bool Server::handle_user_set_command(int sender_fd,
             return true;
         }
 
+        const bool parsed_self_service =
+            parsed->action == UserSetAction::self_register ||
+            parsed->action == UserSetAction::self_add_password ||
+            parsed->action == UserSetAction::set_self_visibility;
+        if (parsed_self_service) {
+            const auto decision = authorize_action(
+                UserClass::regular, parsed->action);
+            if (!decision.allowed) {
+                send_all(sender_fd,
+                         "IMSG " + AdcProtocol::escape_adc(
+                             "[authorization] rejected: " +
+                             std::string(decision.reason)) + "\n");
+                return true;
+            }
+        }
+
         const auto hub_settings = database_.hub_settings();
         if ((parsed->action == UserSetAction::kick_user ||
              parsed->action == UserSetAction::create_ban) &&
@@ -896,10 +931,12 @@ bool Server::handle_user_set_command(int sender_fd,
         const auto effective_value = effective_class.has_value()
             ? static_cast<std::int16_t>(*effective_class)
             : static_cast<std::int16_t>(-1);
-        bool authorized = user_class.has_value() &&
-            effective_class.has_value() &&
-            (*effective_class == UserClass::admin ||
-             *effective_class == UserClass::master);
+        AuthorizationDecision authorization;
+        if (user_class.has_value() && effective_class.has_value()) {
+            authorization = authorize_action(
+                *effective_class, parsed->action);
+        }
+        bool authorized = authorization.allowed;
 
         if (parsed->action == UserSetAction::kick_user) {
             authorized = effective_value >= 3 || actor_has_policy("can_kick");
@@ -922,10 +959,18 @@ bool Server::handle_user_set_command(int sender_fd,
         }
 
         if (!authorized) {
+            const std::string permission = authorization.permission.has_value()
+                ? std::string(permission_name(*authorization.permission))
+                : "unmapped";
+            const std::string minimum = authorization.minimum_class.has_value()
+                ? std::to_string(static_cast<std::int16_t>(
+                    *authorization.minimum_class))
+                : "none";
             send_all(sender_fd,
                      "IMSG " +
                          AdcProtocol::escape_adc(
-                             "[set] rejected: Admin(5) or Master(10) required") +
+                             "[authorization] rejected: permission=" +
+                             permission + " minimum_class=" + minimum) +
                          "\n");
             return true;
         }
@@ -934,7 +979,8 @@ bool Server::handle_user_set_command(int sender_fd,
             (parsed->duration_seconds == 0U ||
              parsed->moderation_target.kind !=
                  ModerationTargetKind::nickname) &&
-            *effective_class != UserClass::master) {
+            (!effective_class.has_value() ||
+             *effective_class != UserClass::master)) {
             send_all(sender_fd,
                      "IMSG " + AdcProtocol::escape_adc(
                          "[set] rejected: Master(10) required for permanent or non-nickname bans") +
@@ -1439,14 +1485,18 @@ std::optional<UserClass> Server::temporary_class_for(
     return found->second;
 }
 
-std::string Server::hostname_for_address(std::string_view address) const {
-    if (!config_.dns_lookup) return "dns_lookup_disabled";
+std::string Server::hostname_for_address(
+    std::string_view address,
+    bool moderation_lookup) const {
+    if (!config_.dns_lookup && !moderation_lookup) {
+        return "dns_lookup_disabled";
+    }
 
     sockaddr_in socket_address{};
     socket_address.sin_family = AF_INET;
     const std::string address_text(address);
     if (::inet_pton(AF_INET, address_text.c_str(), &socket_address.sin_addr) != 1) {
-        return "unavailable";
+        return moderation_lookup ? std::string{} : "unavailable";
     }
 
     std::array<char, NI_MAXHOST> host{};
@@ -1457,7 +1507,7 @@ std::string Server::hostname_for_address(std::string_view address) const {
                       nullptr,
                       0,
                       NI_NAMEREQD) != 0) {
-        return "not_found";
+        return moderation_lookup ? std::string{} : "not_found";
     }
     return host.data();
 }

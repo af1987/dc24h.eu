@@ -1,6 +1,10 @@
 #!/bin/bash
 # install.sh
 #
+# v0.0.10:
+#   - install dc24h.eu-v0.0.10 artifacts and generated file metadata
+#   - retain protected credentials, schema migration and service checks
+#
 # v0.0.09:
 #   - create the protected /var/lib/dc24h.eu/dc24h.eu hub home
 #   - split runtime and MariaDB client configuration files
@@ -232,7 +236,7 @@ awk -v add_history="${add_runtime_history}" '
         if (add_history == 1) {
             print "# dc24h.conf"
             print "#"
-            print "# v0.0.09:"
+            print "# v0.0.10:"
             print "#   - migrate runtime configuration to the protected hub home"
             print "#   - reference protected database.cnf credentials"
             print "#"
@@ -254,7 +258,7 @@ else
     {
         printf '%s\n' '# database.cnf'
         printf '%s\n' '#'
-        printf '%s\n' '# v0.0.09:'
+        printf '%s\n' '# v0.0.10:'
         printf '%s\n' '#   - install protected MariaDB client credentials for this hub home'
         printf '%s\n' '#'
         printf '%s\n' '# Author: gpt-5.6-sol'
@@ -323,7 +327,7 @@ systemctl is-active --quiet dc24h.service
 
 reject_symlink "/etc/dc24h.eu"
 install -d -o root -g root -m 0755 "/etc/dc24h.eu"
-legacy_staging_directory="$(mktemp -d /etc/dc24h.eu/.v0.0.09-link.XXXXXX)"
+legacy_staging_directory="$(mktemp -d /etc/dc24h.eu/.v0.0.10-link.XXXXXX)"
 ln -s -- "${runtime_config}" "${legacy_staging_directory}/dc24h.conf"
 mv -fT -- "${legacy_staging_directory}/dc24h.conf" "${legacy_config}"
 rmdir -- "${legacy_staging_directory}"
