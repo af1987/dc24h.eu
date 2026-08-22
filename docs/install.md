@@ -1,6 +1,10 @@
 <!--
 install.md
 
+v0.0.10:
+  - install the 0.0.10 password, RBAC and hostname-ban release
+  - document moderation constraint migration and ncdc release validation
+
 v0.0.09:
   - install the protected /var/lib/dc24h.eu/dc24h.eu hub home
   - document split runtime/MariaDB configuration and legacy migration
@@ -59,7 +63,7 @@ development files, libgcrypt development files, MariaDB server, ShellCheck and
 ```bash
 git clone https://github.com/af1987/dc24h.eu.git
 cd dc24h.eu
-git checkout agent/dc24h-v0.0.09
+git checkout agent/dc24h-v0.0.10
 sudo ./scripts/install.sh
 ```
 
@@ -103,7 +107,7 @@ the deployment sequence is:
 ## Installed hub home
 
 The text `nazwa-huba` is a placeholder for one validated instance-name segment;
-it is not a literal directory. The v0.0.09 instance is exactly:
+it is not a literal directory. The v0.0.10 instance is exactly:
 
 `/var/lib/dc24h.eu/dc24h.eu`
 
@@ -155,11 +159,11 @@ against that file's directory rather than the caller's working directory.
 Inline `database_*` options remain readable only for legacy migration and must
 not be mixed with `database_config`.
 
-## Database and configuration migration for v0.0.09
+## Database and configuration migration for v0.0.10
 
-v0.0.09 adds no application table or seed. The installer reapplies the complete
-idempotent schema, including the v0.0.08 append-oriented moderation table and
-the existing 30 settings:
+v0.0.10 adds no application table or setting seed. The installer reapplies the
+complete idempotent schema, extends the append-oriented moderation constraint
+with `host`, and retains the existing 30 settings:
 
 ```sql
 ALTER TABLE accounts
@@ -374,6 +378,8 @@ restart the service. Default is `0`.
 !set key.bans.add=[cid|W6AIUW3CLDF6OGHNVE4JPDDJ2P74IWRCF2O36TA|permanent|Identity abuse]
 !set key.bans.add=[ip|192.0.2.10|2d|Address abuse]
 !set key.bans.add=[range|192.0.2.0/24|1M|Network abuse]
+!set key.bans.add=[host|client.example.net|2d|Host abuse]
+!set key.bans.add=[host|*.example.net|1w|Domain abuse]
 !set key.bans.add=[prefix|bot-|1y|Automated clients]
 !set key.bans.add=[share|4096|1h|Exact-share test]
 !set key.bans.info=[42]
@@ -399,6 +405,23 @@ in `docs/dc24h.eu-v0.0.08.md`; the v0.0.09 local database editor is specified in
 up to the `key.bans` ceiling. Reasons are mandatory and use `|` separators.
 
 Passwords may contain dots; the parser consumes only the required leading separators.
+
+## Password and RBAC checks
+
+New password writes are stored as tagged `md5$…` values by compatibility
+requirement. Existing tagged PBKDF2-SHA256 hashes continue to verify. MD5 is
+not a secure modern password-storage choice; use explicit PBKDF2 generation for
+production accounts until the project adopts a memory-hard default.
+
+Every parsed command is authorized before execution. Operator (3) can perform
+bounded registration, view protected account/moderation information and
+moderate live sessions, Admin (5) can manage accounts and bans, and Master (10)
+is required for class changes and global hub settings. Unknown commands have
+no implicit permission.
+
+Hostname bans use reverse DNS even when ordinary operator DNS queries are
+disabled. PTR data is not authenticated: pair `host` bans with `ip` or `range`
+targets when the boundary must be reliable.
 
 ## Service operation
 
@@ -439,17 +462,17 @@ ncdc -c "${GUEST_SESSION_DIR}" -n
 In the first `ncdc` session:
 
 ```text
-/set nick V009Master
-/open dc24h-v009 adc://127.0.0.1:1511/
-/say ncdc-v0.0.09-connection-test
+/set nick V010Master
+/open dc24h-v010 adc://127.0.0.1:1511/
+/say ncdc-v0.0.10-connection-test
 ```
 
 In the second session, use a different persistent client identity:
 
 ```text
-/set nick V009Guest
-/open dc24h-v009 adc://127.0.0.1:1511/
-/say ncdc-v0.0.09-connection-test
+/set nick V010Guest
+/open dc24h-v010 adc://127.0.0.1:1511/
+/say ncdc-v0.0.10-connection-test
 ```
 
 For reproduction, require both clients to complete ADC/TIGR identification,
@@ -459,28 +482,26 @@ isolated release database, also change a setting with
 restore the default, restart `dc24h.service`, reconnect and repeat the echo.
 BASE/TIGR remain negotiated in SUP and TIGR PID/CID validation remains active.
 
-The reviewed v0.0.09 run used Debian 13.6 and real `ncdc 1.23.1`. It completed
-ADC/TIGR identification and echoed `ncdc-v0.0.09-connection-test`; after a
-service restart it reconnected and echoed `ncdc-v0.0.09-after-restart`. The
+The v0.0.10 release test uses Debian 13 and a real `ncdc` client. It must
+complete ADC/TIGR identification and echo `ncdc-v0.0.10-connection-test`; after
+a service restart it must reconnect and echo `ncdc-v0.0.10-after-restart`. The
 v0.0.08 historical moderation validation remains recorded in its own release
 documents.
 
-## v0.0.09 validation record
+## v0.0.10 validation record
 
 - A clean Release build with warnings treated as errors completed; CTest,
   including ShellCheck, passed 8/8.
-- The installer completed repeated executions. Its final current-installer run
-  supplied no password, reused `database.cnf` and left the service active.
-- The schema was applied repeatedly; all 30 canonical setting rows remained
-  present and valid.
-- `list`, `get`, `set` and `check`, invalid key/range cases, both relational
-  invariants and 12 concurrent update attempts ended with a successful final
-  `check`.
+- MariaDB 11.8 schema application completed repeatedly; all 30 canonical
+  setting rows remained present and `dc24h-settings ... check` passed.
+- The moderation constraint accepted `host`. A live `localhost` host ban denied
+  admission with ADC status 230 and was soft-revoked after the check.
 - The systemd unit passed verification; `systemd-analyze security` reported
-  exposure score `3.0`.
-- The final current-installer run used no secret-valued environment variable.
-- Local forbidden-name, C++ pair and secret scans passed.
-- Remote GitHub CI is the required final merge gate for PR #9.
+  exposure score `3.0`, and the installed v0.0.10 service remained active.
+- Real `ncdc 1.23.1` completed ADC/TIGR identification, echoed the release
+  marker, reconnected after restart and echoed the post-restart marker.
+- Local forbidden-name, C++ pair, history and diff scans passed.
+- Remote GitHub CI is the required final merge gate for PR #10.
 
 ## MariaDB
 
@@ -493,7 +514,7 @@ an administrator reset.
 
 ## Network
 
-The default ADC listener is TCP port `1511`. v0.0.09 remains IPv4-only.
+The default ADC listener is TCP port `1511`. v0.0.10 remains IPv4-only.
 Administrative `!set` paths remain restricted to `127.0.0.1`; `+passwd` and
 explicitly enabled `+regme` are self-service exceptions. The separate local
 settings CLI requires root and the protected hub-home contract.

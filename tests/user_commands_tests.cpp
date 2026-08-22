@@ -1,6 +1,11 @@
 /*
     user_commands_tests.cpp
 
+    v0.0.10:
+        - verify tagged MD5 defaults and PBKDF2 compatibility
+        - verify deny-by-default RBAC class/permission mappings
+        - verify exact and wildcard hostname ban matching
+
     - user command and password helper regression tests
 
         v0.0.08:
@@ -41,9 +46,10 @@
 
 #include "user_commands_tests.hpp"
 
-#include "user.hpp"
 #include "hub_settings.hpp"
 #include "moderation.hpp"
+#include "rbac.hpp"
+#include "user.hpp"
 #include "user_commands.hpp"
 
 #include <array>
@@ -472,6 +478,28 @@ void run_user_command_tests() {
         identity, "other", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         "127.0.0.1", std::nullopt));
 
+    const auto host = normalize_ban_target(
+        "host", "CLIENT.Example.COM", error);
+    assert(host.has_value());
+    assert(host->kind == ModerationTargetKind::hostname);
+    assert(host->value == "client.example.com");
+    assert(moderation_target_matches(
+        *host, "user", "", "203.0.113.4", std::nullopt,
+        "client.example.com"));
+    assert(!moderation_target_matches(
+        *host, "user", "", "203.0.113.4", std::nullopt,
+        "other.example.com"));
+    const auto wildcard_host = normalize_ban_target(
+        "host", "*.example.com", error);
+    assert(wildcard_host.has_value());
+    assert(moderation_target_matches(
+        *wildcard_host, "user", "", "203.0.113.4", std::nullopt,
+        "node.example.com"));
+    assert(!moderation_target_matches(
+        *wildcard_host, "user", "", "203.0.113.4", std::nullopt,
+        "example.com"));
+    assert(!normalize_ban_target("host", "-bad.example", error).has_value());
+
     const ModerationEntry active_entry{
         1U,
         ModerationAction::ban,
@@ -542,9 +570,47 @@ void run_user_command_tests() {
     assert(error == "invalid user class");
 
     const auto encoded = hash_password("StrongPass.123");
-    assert(encoded.starts_with("pbkdf2-sha256$"));
+    assert(encoded.starts_with("md5$"));
+    assert(encoded.size() == 36U);
     assert(verify_password("StrongPass.123", encoded));
     assert(!verify_password("WrongPass.123", encoded));
+    assert(hash_password("password") ==
+           "md5$5f4dcc3b5aa765d61d8327deb882cf99");
+    const auto pbkdf2 = hash_password(
+        "StrongPass.123", PasswordHashAlgorithm::pbkdf2_sha256);
+    assert(pbkdf2.starts_with("pbkdf2-sha256$"));
+    assert(verify_password("StrongPass.123", pbkdf2));
+    assert(!verify_password("WrongPass.123", pbkdf2));
+    assert(!verify_password("StrongPass.123", "md5$not-hex"));
+
+    assert(authorize_action(
+        UserClass::regular, UserSetAction::self_add_password).allowed);
+    assert(authorize_action(
+        UserClass::operator_user, UserSetAction::list_bans).allowed);
+    assert(authorize_action(
+        UserClass::operator_user, UserSetAction::kick_user).allowed);
+    assert(authorize_action(
+        UserClass::operator_user, UserSetAction::create_user).allowed);
+    assert(!authorize_action(
+        UserClass::operator_user, UserSetAction::create_ban).allowed);
+    assert(authorize_action(
+        UserClass::admin, UserSetAction::create_ban).allowed);
+    assert(authorize_action(
+        UserClass::admin, UserSetAction::change_password_by_id).allowed);
+    assert(!authorize_action(
+        UserClass::admin, UserSetAction::change_class).allowed);
+    assert(authorize_action(
+        UserClass::master, UserSetAction::change_class).allowed);
+    assert(authorize_action(
+        UserClass::master, UserSetAction::set_hub_setting).allowed);
+    for (int action = 0;
+         action <= static_cast<int>(UserSetAction::list_kicks);
+         ++action) {
+        assert(permission_for_action(
+            static_cast<UserSetAction>(action)).has_value());
+    }
+    assert(!authorize_action(
+        UserClass::master, static_cast<UserSetAction>(999)).allowed);
 }
 
 }  // namespace dc24h::tests

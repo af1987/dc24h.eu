@@ -1,6 +1,11 @@
 <!--
 instructions.md
 
+v0.0.10:
+  - require tagged MD5 defaults with PBKDF2 verification compatibility
+  - require centralized deny-by-default RBAC on every parsed command
+  - require normalized exact/wildcard hostname bans
+
 v0.0.09:
   - require the protected per-hub home and split database configuration
   - define the root-only validated settings administration boundary
@@ -45,7 +50,7 @@ Date: 2026-08-21
 
 # Engineering instructions
 
-These rules apply to `dc24h.eu-v0.0.09` and later changes.
+These rules apply to `dc24h.eu-v0.0.10` and later changes.
 
 ## Mandatory baseline
 
@@ -77,7 +82,21 @@ These rules apply to `dc24h.eu-v0.0.09` and later changes.
 
 Canonical numeric classes are `-1, 0, 1, 2, 3, 4, 5, 10`. Other class values must be rejected.
 
-Passwords must never be stored in plaintext. Password hashes use the existing salted PBKDF2-HMAC-SHA256 representation unless changed through a security ADR.
+Passwords must never be stored in plaintext. New writes use the explicitly
+requested tagged `md5$<hex>` default. Verification must accept both tagged MD5
+and existing tagged PBKDF2-HMAC-SHA256 values, use constant-time digest
+comparison and reject malformed or untagged values. MD5 is a compatibility
+mechanism and must be documented as unsuitable for secure modern password
+storage; explicit PBKDF2 generation remains supported.
+
+Every parsed command must pass the central `rbac.cpp` / `rbac.hpp`
+action-to-permission map before execution. Unknown actions, permissions and
+roles deny by default. Minimum classes are Regular (0) for explicit
+self-service, Operator (3) for bounded registration, user views and live
+moderation, Admin (5) for account/ban management, and Master (10) for role or
+hub-configuration changes.
+Contextual class differences and delegated capabilities are additional checks,
+not replacements for the base permission.
 
 The command semantics are intentionally non-overlapping:
 
@@ -89,15 +108,17 @@ The command semantics are intentionally non-overlapping:
 - `+passwd <password>` assigns only a missing password to the current enabled local account and must never overwrite an existing hash.
 - `key.user.info.userlist.class=[class]` returns all registered users in the selected class through the private response; `[]` defaults to class `0`, and enabled/password states are marked.
 - Account and moderation command forms remain canonical as documented in
-  `docs/dc24h.eu-v0.0.08.md`; the v0.0.09 deployment and local settings
-  interface are documented in `docs/dc24h.eu-v0.0.09.md`.
+  `docs/dc24h.eu-v0.0.08.md`; v0.0.10 password, RBAC and hostname-ban behavior
+  is documented in `docs/dc24h.eu-v0.0.10.md` and ADR-0014.
 - Global policy values are validated before storage in MariaDB; unknown keys and malformed values are rejected.
 - `+regme` must enforce configured class, nickname prefix, share and password rules.
 - Passwordless accounts receive a finite first-password deadline.
 - Removal, disabling or demotion of the final enabled Master (10) must be rejected.
 - A temporary class is memory-only, disappears on restart and cannot exceed Admin (5).
 - IP, range, subnet and hostname keys inspect active IPv4 sessions only and return private results.
-- Reverse DNS is disabled by default and may run only when `dns_lookup=1`.
+- Reverse DNS user-information queries are disabled by default and may run only
+  when `dns_lookup=1`. Admission may resolve a hostname while an active `host`
+  ban exists.
 - Timed policies use MariaDB UTC expiry, accept `m`/`h`/`d` durations from 1 minute through 365 days, and must be enforced before ADC routing.
 - `gag`, `no_chat`, `no_pm`, `no_search` and `no_download` block the command families defined in ADR-0010.
 - Permanent/timed hidden share must remove BINF `SS`, `SF`, `SL`; hidden operator state clears ADC `CT` bits 4/8/16.
@@ -108,9 +129,12 @@ The command semantics are intentionally non-overlapping:
 - A punitive kick must persist its nickname/CID audit row before socket
   shutdown. A database failure must leave the target connected and return an
   error to the actor.
-- Ban targets must be explicit (`nick`, `cid`, `ip`, `range`, `prefix` or
-  `share`), normalized without user-supplied regular expressions and checked
+- Ban targets must be explicit (`nick`, `cid`, `ip`, `range`, `host`, `prefix`
+  or `share`), normalized without user-supplied regular expressions and checked
   before ADC NORMAL. Address bans are also checked immediately after accept.
+- A `host` target is an exact normalized DNS name or one leading wildcard.
+  Reverse DNS failure yields no match; host bans are never proof of identity,
+  so IP/range and ADC identity controls remain preferred.
 - Moderation reasons are mandatory printable UTF-8 and bounded to 1000 characters.
   Action, target, actor, creation, expiry and revocation metadata persist in
   MariaDB. Kick removal and unban are soft revocations and require their own

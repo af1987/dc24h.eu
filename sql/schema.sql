@@ -1,5 +1,9 @@
 -- schema.sql
 --
+-- v0.0.10:
+--   - allow exact and wildcard hostname targets in persistent ban entries
+--   - retain indexed active ban matching and migration-safe constraints
+--
 -- v0.0.08:
 --   - add auditable kick and ban entries with expiry and soft revocation
 --   - seed key.kicks rejoin delay and key.bans temporary maximum
@@ -147,8 +151,16 @@ CREATE TABLE IF NOT EXISTS moderation_entries (
         CHECK (action_type IN ('kick', 'ban')),
     CONSTRAINT chk_moderation_target
         CHECK (target_type IN
-            ('identity', 'nick', 'cid', 'ip', 'range', 'prefix', 'share'))
+            ('identity', 'nick', 'cid', 'ip', 'range', 'host', 'prefix', 'share'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE moderation_entries
+    DROP CONSTRAINT IF EXISTS chk_moderation_target;
+
+ALTER TABLE moderation_entries
+    ADD CONSTRAINT chk_moderation_target
+        CHECK (target_type IN
+            ('identity', 'nick', 'cid', 'ip', 'range', 'host', 'prefix', 'share'));
 
 CREATE TABLE IF NOT EXISTS settings (
     setting_key VARCHAR(128) NOT NULL PRIMARY KEY,

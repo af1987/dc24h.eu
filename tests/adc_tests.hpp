@@ -1,6 +1,9 @@
 /*
     adc_tests.hpp
 
+    v0.0.10:
+        - declare ADC identity and canonical v0.0.10 validation
+
     v0.0.09:
         - declare ADC identity and canonical v0.0.09 validation
 

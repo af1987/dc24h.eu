@@ -3,6 +3,10 @@
 
     - MariaDB persistence implementation
 
+        v0.0.10:
+            - migrate moderation constraints for exact/wildcard host bans
+            - filter and match active hostname targets during admission
+
         v0.0.09:
             - list validated hub settings for the local administration tool
             - validate complete setting snapshots inside row-locking transactions
@@ -390,8 +394,17 @@ void Database::initialize_schema() {
         "(action_type IN ('kick','ban')),"
         "CONSTRAINT chk_moderation_target CHECK "
         "(target_type IN "
-        "('identity','nick','cid','ip','range','prefix','share'))"
+        "('identity','nick','cid','ip','range','host','prefix','share'))"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+    execute_locked(
+        "ALTER TABLE moderation_entries "
+        "DROP CONSTRAINT IF EXISTS chk_moderation_target");
+    execute_locked(
+        "ALTER TABLE moderation_entries "
+        "ADD CONSTRAINT chk_moderation_target CHECK "
+        "(target_type IN "
+        "('identity','nick','cid','ip','range','host','prefix','share'))");
 
     execute_locked(
         "CREATE TABLE IF NOT EXISTS settings ("
@@ -640,6 +653,25 @@ AddPasswordResult Database::add_user_password_if_missing(
         : AddPasswordResult::already_set;
     mysql_free_result(result);
     return outcome;
+}
+
+bool Database::verify_user_password(std::string_view username,
+                                    std::string_view password) {
+    std::lock_guard lock(mutex_);
+    const auto username_sql = escape_locked(username);
+    execute_locked(
+        "SELECT COALESCE(password_hash,'') FROM accounts WHERE nick='" +
+        username_sql + "' AND enabled=TRUE LIMIT 1");
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) {
+        throw std::runtime_error(
+            "MariaDB result failed: " + std::string(mysql_error(connection_)));
+    }
+    const MYSQL_ROW row = mysql_fetch_row(result);
+    const std::string encoded =
+        row != nullptr && row[0] != nullptr ? row[0] : std::string{};
+    mysql_free_result(result);
+    return !encoded.empty() && verify_password(password, encoded);
 }
 
 std::vector<UserListEntry> Database::users_by_class(UserClass user_class) {
@@ -1430,7 +1462,8 @@ std::optional<ModerationEntry> Database::active_moderation_match(
     std::string_view nickname,
     std::string_view cid,
     std::string_view ipv4,
-    std::optional<std::uint64_t> share_size) {
+    std::optional<std::uint64_t> share_size,
+    std::string_view hostname) {
     std::lock_guard lock(mutex_);
     std::vector<std::string> target_clauses;
     std::vector<std::string> identity_clauses;
@@ -1467,6 +1500,9 @@ std::optional<ModerationEntry> Database::active_moderation_match(
             "(target_type='share' AND target_value='" +
             std::to_string(*share_size) + "')");
     }
+    if (!hostname.empty()) {
+        target_clauses.emplace_back("target_type='host'");
+    }
     if (target_clauses.empty()) return std::nullopt;
 
     std::string target_filter;
@@ -1490,7 +1526,7 @@ std::optional<ModerationEntry> Database::active_moderation_match(
         while (MYSQL_ROW row = mysql_fetch_row(result)) {
             auto entry = moderation_entry_from_row(row);
             if (moderation_target_matches(
-                    entry.target, nickname, cid, ipv4, share_size)) {
+                    entry.target, nickname, cid, ipv4, share_size, hostname)) {
                 mysql_free_result(result);
                 return entry;
             }
@@ -1501,6 +1537,22 @@ std::optional<ModerationEntry> Database::active_moderation_match(
     }
     mysql_free_result(result);
     return std::nullopt;
+}
+
+bool Database::has_active_hostname_bans() {
+    std::lock_guard lock(mutex_);
+    execute_locked(
+        "SELECT 1 FROM moderation_entries WHERE action_type='ban' "
+        "AND target_type='host' AND revoked_at IS NULL "
+        "AND (expires_at IS NULL OR expires_at>UTC_TIMESTAMP(6)) LIMIT 1");
+    MYSQL_RES* result = mysql_store_result(connection_);
+    if (result == nullptr) {
+        throw std::runtime_error(
+            "MariaDB result failed: " + std::string(mysql_error(connection_)));
+    }
+    const bool found = mysql_fetch_row(result) != nullptr;
+    mysql_free_result(result);
+    return found;
 }
 
 std::optional<ModerationEntry> Database::moderation_entry(std::uint64_t id) {

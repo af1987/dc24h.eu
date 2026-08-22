@@ -1,6 +1,11 @@
 /*
     user.cpp
 
+    v0.0.10:
+        - add tagged MD5 password hashing as the compatibility default
+        - verify tagged MD5 and existing PBKDF2-SHA256 hashes in constant time
+        - retain explicit PBKDF2 generation for migration and safer deployments
+
     v0.0.03:
         - implement numeric user class mapping
         - hash account passwords with PBKDF2-HMAC-SHA256 and random salt
@@ -29,7 +34,8 @@ namespace {
 constexpr std::size_t salt_size = 16U;
 constexpr std::size_t digest_size = 32U;
 constexpr unsigned long pbkdf2_iterations = 210000UL;
-constexpr std::string_view password_prefix = "pbkdf2-sha256";
+constexpr std::string_view md5_password_prefix = "md5";
+constexpr std::string_view pbkdf2_password_prefix = "pbkdf2-sha256";
 
 void ensure_gcrypt_initialized() {
     static std::once_flag flag;
@@ -123,6 +129,18 @@ std::vector<unsigned char> derive_password(std::string_view password,
     return digest;
 }
 
+std::vector<unsigned char> md5_password(std::string_view password) {
+    ensure_gcrypt_initialized();
+    std::vector<unsigned char> digest(
+        gcry_md_get_algo_dlen(GCRY_MD_MD5));
+    if (digest.size() != 16U) {
+        throw std::runtime_error("libgcrypt MD5 is unavailable");
+    }
+    gcry_md_hash_buffer(
+        GCRY_MD_MD5, digest.data(), password.data(), password.size());
+    return digest;
+}
+
 }  // namespace
 
 bool is_valid_user_class(std::int16_t value) noexcept {
@@ -157,10 +175,31 @@ std::string_view user_class_name(UserClass user_class) noexcept {
     return "Unknown";
 }
 
-std::string hash_password(std::string_view password) {
+std::string_view password_hash_algorithm_name(
+    PasswordHashAlgorithm algorithm) noexcept {
+    switch (algorithm) {
+        case PasswordHashAlgorithm::md5: return md5_password_prefix;
+        case PasswordHashAlgorithm::pbkdf2_sha256:
+            return pbkdf2_password_prefix;
+    }
+    return "unknown";
+}
+
+std::string hash_password(std::string_view password,
+                          PasswordHashAlgorithm algorithm) {
     if (password.size() < 8U || password.size() > 1024U) {
         throw std::invalid_argument(
             "password length must be between 8 and 1024 UTF-8 bytes");
+    }
+
+    if (algorithm == PasswordHashAlgorithm::md5) {
+        const auto digest = md5_password(password);
+        return std::string(md5_password_prefix) + "$" +
+            to_hex(digest.data(), digest.size());
+    }
+
+    if (algorithm != PasswordHashAlgorithm::pbkdf2_sha256) {
+        throw std::invalid_argument("unsupported password hash algorithm");
     }
 
     ensure_gcrypt_initialized();
@@ -172,7 +211,7 @@ std::string hash_password(std::string_view password) {
     const auto digest =
         derive_password(password, salt_vector, pbkdf2_iterations);
 
-    return std::string(password_prefix) + "$" +
+    return std::string(pbkdf2_password_prefix) + "$" +
            std::to_string(pbkdf2_iterations) + "$" +
            to_hex(salt.data(), salt.size()) + "$" +
            to_hex(digest.data(), digest.size());
@@ -182,10 +221,22 @@ bool verify_password(std::string_view password,
                      std::string_view encoded_hash) noexcept {
     try {
         const auto first = encoded_hash.find('$');
-        if (first == std::string_view::npos ||
-            encoded_hash.substr(0, first) != password_prefix) {
+        if (first == std::string_view::npos) {
             return false;
         }
+
+        const auto prefix = encoded_hash.substr(0, first);
+        if (prefix == md5_password_prefix) {
+            if (encoded_hash.find('$', first + 1U) != std::string_view::npos) {
+                return false;
+            }
+            const auto expected = from_hex(encoded_hash.substr(first + 1U));
+            if (!expected.has_value() || expected->size() != 16U) {
+                return false;
+            }
+            return constant_time_equal(md5_password(password), *expected);
+        }
+        if (prefix != pbkdf2_password_prefix) return false;
 
         const auto second = encoded_hash.find('$', first + 1U);
         const auto third = encoded_hash.find('$', second == std::string_view::npos

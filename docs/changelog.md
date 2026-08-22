@@ -1,6 +1,10 @@
 <!--
 changelog.md
 
+v0.0.10:
+  - add tagged password hashing, central RBAC and hostname bans
+  - record compatibility and security boundaries for MD5/reverse DNS
+
 v0.0.09:
   - add the protected per-hub home and local database settings administration
   - record secure repeat installation and reviewed release validation
@@ -34,6 +38,58 @@ Date: 2026-08-21
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.10 — 2026-08-21
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- Paired `rbac.cpp` / `rbac.hpp` module with explicit permissions and minimum
+  user classes.
+- Tagged `md5$…` password generation plus dual MD5/PBKDF2-SHA256 verification.
+- Database password verification API for enabled accounts.
+- Exact and leading-wildcard `host` ban targets with normalized admission
+  matching and MariaDB constraint migration.
+- ADR-0014 and the v0.0.10 release manifest.
+
+### Changed
+
+- Raised canonical runtime, CMake, test, documentation and systemd metadata to
+  `0.0.10` / `dc24h.eu-v0.0.10`.
+- Every parsed account/moderation command now crosses one central
+  deny-by-default RBAC decision before execution.
+- Operator (3) can perform bounded registration, view protected information and
+  moderate live sessions; Admin (5) manages accounts and bans; Master (10)
+  changes roles and global hub configuration. Existing contextual
+  difference/capability checks remain.
+- Admission performs reverse lookup only while a live hostname ban requires
+  it. Existing IP, CIDR/range, nickname, CID, prefix and share targets remain.
+
+### Security
+
+- Unknown actions and roles have no implicit permission and fail closed.
+- Hash formats are tagged and malformed/untagged values are rejected; digest
+  comparisons are constant-time.
+- MD5 is the requested compatibility default but is fast, unsalted and unsafe
+  against offline guessing. Explicit PBKDF2-SHA256 generation remains
+  available and is preferred for production until a memory-hard replacement is
+  adopted.
+- Reverse DNS is not authenticated. Host bans are convenience filters; IP/range
+  bans and authenticated identity remain stronger boundaries.
+
+### Validation
+
+- Debian 13 warnings-as-errors Release build and CTest passed 8/8.
+- MariaDB 11.8 schema application passed repeatedly with all 30 settings and
+  the hostname target constraint intact.
+- A live localhost hostname ban denied admission with ADC status 230 and was
+  soft-revoked after the test.
+- The active v0.0.10 systemd unit passed verification with exposure score 3.0.
+- Real `ncdc 1.23.1` echoed the connection marker, reconnected after service
+  restart and echoed the post-restart marker.
+- Local pair, history, forbidden-name and diff checks passed; GitHub CI on PR
+  #10 remains the final remote gate.
 
 ## dc24h.eu-v0.0.09 — 2026-08-21
 

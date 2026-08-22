@@ -1,5 +1,9 @@
 # dc24h.service
 #
+# v0.0.10:
+#   - raise service description to dc24h.eu-v0.0.10
+#   - retain systemd hardening and the protected per-hub home
+#
 # v0.0.09:
 #   - raise service description to dc24h.eu-v0.0.09
 #   - start from the protected /var/lib/dc24h.eu/dc24h.eu hub home
@@ -42,7 +46,7 @@
 # Date: 2026-08-21
 
 [Unit]
-Description=dc24h.eu Direct Connect ADC Hub v0.0.09
+Description=dc24h.eu Direct Connect ADC Hub v0.0.10
 Documentation=https://github.com/af1987/dc24h.eu
 After=network-online.target mariadb.service
 Wants=network-online.target

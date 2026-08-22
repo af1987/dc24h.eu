@@ -1,6 +1,11 @@
 <!--
 architecture.md
 
+v0.0.10:
+  - add tagged MD5/PBKDF2 password verification architecture
+  - centralize deny-by-default RBAC command authorization
+  - extend persistent admission controls with hostname targets
+
 v0.0.09:
   - move runtime configuration into the protected per-hub home
   - split non-secret hub configuration from MariaDB Connector/C options
@@ -34,16 +39,15 @@ Author: gpt-5.6-sol
 Date: 2026-08-21
 -->
 
-# Architecture — dc24h.eu-v0.0.09
+# Architecture — dc24h.eu-v0.0.10
 
 ## Baseline
 
 `dc24h.eu` is a C++20 Direct Connect hub for Debian 13. It implements the ADC
 1.0.4 BASE/TIGR profile, validates UTF-8, stores persistent state in MariaDB
-`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.09
-places the installed instance in a protected per-hub home, separates MariaDB
-credentials from normal runtime settings and adds a local validated settings
-administration path. The v0.0.08 kick and ban admission model is unchanged.
+`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.10
+retains the protected per-hub home and adds tagged password compatibility,
+central RBAC command mediation and reverse-hostname ban targets.
 
 ## Runtime flow
 
@@ -55,15 +59,19 @@ administration path. The v0.0.08 kick and ban admission model is unchanged.
    all seven required options, file type and safe permissions. `Database` then
    asks MariaDB Connector/C to read that option file, connects with `utf8mb4`
    and applies idempotent schema updates.
-4. `Server` listens on IPv4 TCP port 1511 by default, checks active address
-   bans immediately after accept, and allocates a four-character ADC SID.
+4. `Server` listens on IPv4 TCP port 1511 by default, checks active address,
+   range and (when configured by an active entry) reverse-hostname bans after
+   accept, and allocates a four-character ADC SID.
 5. `AdcProtocol` negotiates BASE/TIGR in SUP, validates UTF-8/escaping, TIGR
    PID/CID identity, unique INF names and B/D/E/F routing. BINF `SU` is not
    required to repeat SUP features.
-6. Before NORMAL, the server checks active nickname, CID, address, range,
-   prefix and share targets. A lookup failure rejects admission.
+6. Before NORMAL, the server checks active nickname, CID, address, range, host,
+   prefix and share targets. A database lookup failure rejects admission.
 7. NORMAL-state `BMSG` text beginning with `!set `, `+passwd ` or `+regme ` is intercepted before broadcast.
-8. The server validates the loopback and class boundary, then delegates persistent operations to `UserCommandProcessor`/`Database` or evaluates live-session queries itself.
+8. The server validates the loopback boundary, maps the parsed action through
+   central deny-by-default RBAC, applies contextual class/capability rules, then
+   delegates persistent operations to `UserCommandProcessor`/`Database` or
+   evaluates live-session queries itself.
 9. Runtime policy snapshots filter INF and routed commands before delivery.
 10. The result is escaped and returned only to the requester as `IMSG`.
 
@@ -71,7 +79,10 @@ administration path. The v0.0.08 kick and ban admission model is unchanged.
 
 - `src/adc.cpp` / `src/adc.hpp`: ADC parsing, state machine and routing decisions.
 - `src/hash.cpp` / `src/hash.hpp`: ADC Base32 and TIGR identity derivation.
-- `src/user.cpp` / `src/user.hpp`: canonical numeric classes and PBKDF2-HMAC-SHA256 passwords.
+- `src/user.cpp` / `src/user.hpp`: canonical numeric classes, tagged MD5 default
+  hashing and MD5/PBKDF2-SHA256 verification.
+- `src/rbac.cpp` / `src/rbac.hpp`: command permissions, minimum class hierarchy
+  and deny-by-default authorization decisions.
 - `src/hub_settings.cpp` / `src/hub_settings.hpp`: canonical policy keys, normalization and nickname checks.
 - `src/moderation.cpp` / `src/moderation.hpp`: target normalization, duration parsing and admission matching.
 - `src/user_commands.cpp` / `src/user_commands.hpp`: complete key grammar, duration parsing, validation and persistent command execution.
@@ -87,7 +98,7 @@ administration path. The v0.0.08 kick and ban admission model is unchanged.
 - `scripts/install.sh`: creates the hub home, migrates runtime configuration,
   securely creates or reuses protected MariaDB options, validates the staged
   deployment and installs/restarts the service.
-- `src/version.cpp` / `src/version.hpp`: `0.0.09`, release identity, author and date.
+- `src/version.cpp` / `src/version.hpp`: `0.0.10`, release identity, author and date.
 
 Every production and test `*.cpp` has a matching `*.hpp` and vice versa.
 
@@ -151,7 +162,13 @@ minimum/maximum and kick/ban invariants, then commits the upsert or rolls back.
 This row locking coordinates the daemon and separate CLI processes rather than
 relying only on an in-process mutex.
 
-Passwords use salted PBKDF2-HMAC-SHA256 with 210000 iterations, a 16-byte random salt and a 32-byte derived key. Plaintext passwords and hashes are never returned in command messages. Password-presence information is reported only as `set`/`unset`.
+New password writes use tagged MD5 by explicit compatibility requirement.
+Verification supports both `md5$…` and the existing salted
+PBKDF2-HMAC-SHA256 format with 210000 iterations. Malformed or untagged hashes
+fail closed and digest comparison is constant-time. Plaintext passwords and
+hashes are never returned in command messages. MD5 is not a safe modern
+password-storage algorithm; the stronger PBKDF2 generator remains available
+for explicit use.
 
 Removal, disabling and permanent class demotion query the target while holding the database mutex. If the operation would eliminate the final enabled Master (10), it is rejected.
 
@@ -190,7 +207,7 @@ Account information comes from MariaDB. IP and hostname information comes only f
 
 ## Trust boundaries
 
-ADC VERIFY (`GPA`/`PAS`) is not implemented in v0.0.09. In-hub management
+ADC VERIFY (`GPA`/`PAS`) is not implemented in v0.0.10. In-hub management
 commands therefore require IPv4 loopback plus the configured class/capability
 boundary. `+passwd` and enabled `+regme` are explicit self-service exceptions;
 account IP binding and active moderation entries are enforced during
@@ -213,7 +230,10 @@ temporary duration. Kick checks the actor class, persists a nickname/CID entry,
 then closes the socket. Disconnect closes the socket without an entry.
 
 Ban targets are explicitly typed as nickname, CID, IPv4, inclusive range/CIDR,
-nickname prefix or exact `SS` share size. Temporary rows stop matching at UTC
+exact/leading-wildcard reverse hostname, nickname prefix or exact `SS` share
+size. Hostname bans trigger reverse lookup only while an active host entry
+exists; they are convenience controls because PTR data is not authenticated.
+Temporary rows stop matching at UTC
 expiry; permanent rows have no expiry. Unban records revocation actor, time and
 reason instead of deleting history. Address checks occur after accept, while
 verified identity/share checks occur before NORMAL. `NI`, `ID`, `PD` and `SS` cannot
@@ -231,21 +251,16 @@ fail closed without blocking on client backpressure. DNS is executed outside
 the clients lock. The target deployment is Debian 13 with systemd, MariaDB,
 libmariadb and libgcrypt.
 
-See ADR-0013 for the v0.0.09 home, configuration and local administration
-decision. ADR-0012 remains authoritative for kick/ban admission, and ADR-0011
-remains authoritative for class, nickname and self-registration policy.
+See ADR-0014 for password compatibility, RBAC and host-ban decisions. ADR-0013
+remains authoritative for the protected home and local administration;
+ADR-0012 remains authoritative for the rest of kick/ban admission.
 
-## v0.0.09 verification
+## v0.0.10 verification
 
-The release candidate was verified on Debian 13.6 with a clean Release build
-using warnings as errors and CTest 8/8, including ShellCheck. The installer ran
-repeatedly; its final current-installer run reused the existing credential
-without new password input. The schema was applied repeatedly and the complete
-30-row snapshot
-remained valid. `list`, `get`, `set` and `check`, invalid keys/ranges, both
-relational invariants and 12 concurrent update attempts ended with a successful
-final `check`. The systemd unit was active, passed unit verification and
-received exposure score `3.0`. A real Debian `ncdc 1.23.1` client completed
-ADC/TIGR echo and post-restart reconnect/echo. Local forbidden-name, C++ pair
-and secret scans passed. Remote GitHub CI is the required final merge gate for
-PR #9.
+Debian 13 warnings-as-errors Release build and CTest passed 8/8. Repeated
+MariaDB 11.8 schema application retained 30 settings and the hostname target
+constraint; a live hostname ban returned ADC status 230 and was soft-revoked.
+The active v0.0.10 systemd unit passed verification with exposure score 3.0.
+Real `ncdc 1.23.1` completed ADC/TIGR login, echoed the release marker,
+reconnected after restart and echoed the post-restart marker. Local policy
+scans passed; GitHub CI for PR #10 remains the final remote merge gate.

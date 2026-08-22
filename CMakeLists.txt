@@ -1,5 +1,10 @@
 # CMakeLists.txt
 #
+# v0.0.10:
+#   - raise CMake project version to 0.0.10
+#   - build the paired central RBAC module
+#   - retain password, moderation and command authorization tests
+#
 # v0.0.09:
 #   - raise CMake project version to 0.0.09
 #   - build/install the paired local settings administration tool
@@ -47,7 +52,7 @@
 
 cmake_minimum_required(VERSION 3.25)
 
-project(dc24h VERSION 0.0.09 LANGUAGES CXX)
+project(dc24h VERSION 0.0.10 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -79,6 +84,8 @@ add_executable(dc24h.eu
     src/hash.hpp
     src/user.cpp
     src/user.hpp
+    src/rbac.cpp
+    src/rbac.hpp
     src/hub_settings.cpp
     src/hub_settings.hpp
     src/moderation.cpp
@@ -155,6 +162,8 @@ if(BUILD_TESTING)
         src/database.hpp
         src/user.cpp
         src/user.hpp
+        src/rbac.cpp
+        src/rbac.hpp
         src/adc.cpp
         src/adc.hpp
         src/hash.cpp

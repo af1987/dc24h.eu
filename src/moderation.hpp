@@ -3,6 +3,10 @@
 
     - typed kick and ban policy model
 
+        v0.0.10:
+            - add normalized exact and wildcard hostname ban targets
+            - include reverse hostname input in admission matching
+
         v0.0.08:
             - define persistent moderation actions and target kinds
             - declare duration, target normalization and admission matching helpers
@@ -35,6 +39,7 @@ enum class ModerationTargetKind {
     cid,
     ipv4,
     ipv4_range,
+    hostname,
     nickname_prefix,
     share_size
 };
@@ -84,7 +89,8 @@ bool moderation_target_matches(
     std::string_view nickname,
     std::string_view cid,
     std::string_view ipv4,
-    std::optional<std::uint64_t> share_size) noexcept;
+    std::optional<std::uint64_t> share_size,
+    std::string_view hostname = {}) noexcept;
 
 bool moderation_entry_active(const ModerationEntry& entry,
                              std::int64_t now) noexcept;
