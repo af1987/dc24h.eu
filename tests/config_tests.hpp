@@ -1,6 +1,9 @@
 /*
     config_tests.hpp
 
+    v0.0.12:
+        - declare TLS, bounded-I/O and timeout configuration tests
+
     v0.0.11:
         - declare anti-abuse configuration regression coverage
 

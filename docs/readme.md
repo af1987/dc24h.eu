@@ -1,6 +1,10 @@
 <!--
 readme.md
 
+v0.0.12:
+  - index native ADCS/TLS, bounded transport and timeout documentation
+  - point to ADR-0016 and the v0.0.12 release manifest
+
 v0.0.11:
   - point to ADR-0015 and the v0.0.11 security release manifest
   - document Argon2id and active connection-abuse controls
@@ -50,7 +54,7 @@ Date: 2026-08-22
 
 # dc24h.eu documentation
 
-This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.11`.
+This directory is the authoritative design and operations documentation for `dc24h.eu-v0.0.12`.
 
 ## Documents
 
@@ -58,7 +62,8 @@ This directory is the authoritative design and operations documentation for `dc2
 - `instructions.md` — permanent engineering, deployment security, versioning, ADR, password-security and C++ pair rules.
 - `changelog.md` — release history.
 - `install.md` — Debian 13 installation, hub-home settings administration, tests, systemd and first-Master bootstrap.
-- `dc24h.eu-v0.0.11.md` — current Argon2id and anti-abuse release manifest.
+- `dc24h.eu-v0.0.12.md` — current TLS, bounded-I/O and timeout release manifest.
+- `dc24h.eu-v0.0.11.md` — previous Argon2id and anti-abuse release manifest.
 - `dc24h.eu-v0.0.10.md` — previous password, RBAC and hostname-ban release manifest.
 - `dc24h.eu-v0.0.09.md` — previous per-hub home and settings administration release manifest.
 - `dc24h.eu-v0.0.08.md` — previous kick/ban release manifest and command table.
@@ -83,6 +88,8 @@ This directory is the authoritative design and operations documentation for `dc2
 - OS/service manager: Debian 13 / systemd
 - Installed hub home: `/var/lib/dc24h.eu/dc24h.eu`
 - Configuration: non-secret `dc24h.conf` plus protected `database.cnf`
+- Network: ADC on 1511 and configured ADCS/TLS 1.3 on 1512; optional TLS-only
+- Resource controls: hard input/output ceilings and phase-specific deadlines
 - Installer secret input: hidden prompt or root-owned mode-`0600` file on a
   clean install; automatic credential reuse without rotation on reinstall
 - Author/date: `gpt-5.6-sol`, `2026-08-22`
@@ -130,3 +137,8 @@ v0.0.11 supersedes the MD5 write decision with Argon2id and activates
 temporary password-failure bans, account IP authorization, per-IP connection
 limits, reconnect throttling and configurable clone detection. See
 `dc24h.eu-v0.0.11.md` and ADR-0015.
+
+v0.0.12 adds OpenSSL-backed ADCS, optional TLS-only service, hard logical-line
+and output limits, and six named ADC session timeouts. `ncdc` remains only a
+test client; the server accepts other conforming ADC clients. See
+`dc24h.eu-v0.0.12.md` and ADR-0016.

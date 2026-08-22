@@ -1,6 +1,10 @@
 /*
     server.hpp
 
+    v0.0.12:
+        - declare parallel ADC/ADCS listeners and TLS-only operation
+        - use bounded transports, ReadLineLocal and phase timeouts
+
     v0.0.11:
         - enforce AntiAbuse admission, reconnect, clone and IP-count controls
         - retain the clone fingerprint until disconnect accounting completes
@@ -55,11 +59,13 @@
 #include "config.hpp"
 #include "database.hpp"
 #include "rbac.hpp"
+#include "tls_transport.hpp"
 #include "user_commands.hpp"
 
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -94,8 +100,13 @@ private:
         std::int64_t password_deadline{0};
     };
 
-    int create_listener() const;
-    void client_loop(int client_fd, std::string sid, std::string remote_address);
+    int create_listener(std::uint16_t port) const;
+    void accept_client(int listener_fd, bool use_tls);
+    void client_loop(int client_fd,
+                     std::string sid,
+                     std::string remote_address,
+                     bool use_tls,
+                     std::shared_ptr<SocketTransport> transport);
 
     bool finish_identification(
         int client_fd,
@@ -155,12 +166,14 @@ private:
     Database& database_;
     UserCommandProcessor user_commands_;
     AntiAbuse anti_abuse_;
+    std::unique_ptr<TlsServerContext> tls_context_;
 
     std::atomic<std::uint32_t> sid_counter_{1};
     std::mutex moderation_mutex_;
     std::mutex clients_mutex_;
-    std::mutex send_mutex_;
     std::unordered_map<int, ClientInfo> clients_;
+    std::mutex transports_mutex_;
+    std::unordered_map<int, std::shared_ptr<SocketTransport>> transports_;
 
     mutable std::mutex temporary_classes_mutex_;
     std::unordered_map<std::string, UserClass> temporary_classes_;
@@ -169,6 +182,7 @@ private:
     std::vector<std::thread> workers_;
 
     int listen_fd_{-1};
+    int tls_listen_fd_{-1};
 };
 
 }  // namespace dc24h

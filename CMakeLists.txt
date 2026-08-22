@@ -1,5 +1,9 @@
 # CMakeLists.txt
 #
+# v0.0.12:
+#   - raise CMake project version to 0.0.12
+#   - add configurable TLS proxy features, OpenSSL and transport tests
+#
 # v0.0.11:
 #   - raise CMake project version to 0.0.11
 #   - link Argon2id and build paired anti-abuse enforcement/tests
@@ -56,7 +60,7 @@
 
 cmake_minimum_required(VERSION 3.25)
 
-project(dc24h VERSION 0.0.11 LANGUAGES CXX)
+project(dc24h VERSION 0.0.12 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,9 +68,19 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(PkgConfig REQUIRED)
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 pkg_check_modules(MARIADB REQUIRED IMPORTED_TARGET libmariadb)
 pkg_check_modules(GCRYPT REQUIRED IMPORTED_TARGET libgcrypt)
 pkg_check_modules(ARGON2 REQUIRED IMPORTED_TARGET libargon2)
+
+option(USE_TLS_PROXY "Build direct ADCS/TLS listener support" ON)
+option(USE_FEARTLS_PROXY "Build feature-aware TLS proxy support" ON)
+if(USE_TLS_PROXY)
+    add_compile_definitions(USE_TLS_PROXY=1)
+endif()
+if(USE_FEARTLS_PROXY)
+    add_compile_definitions(USE_FEARTLS_PROXY=1)
+endif()
 
 set(DC24H_WARNING_FLAGS
     -Wall
@@ -91,6 +105,10 @@ add_executable(dc24h.eu
     src/user.hpp
     src/anti_abuse.cpp
     src/anti_abuse.hpp
+    src/io_limits.cpp
+    src/io_limits.hpp
+    src/tls_transport.cpp
+    src/tls_transport.hpp
     src/rbac.cpp
     src/rbac.hpp
     src/hub_settings.cpp
@@ -110,6 +128,8 @@ target_link_libraries(dc24h.eu PRIVATE
     PkgConfig::MARIADB
     PkgConfig::GCRYPT
     PkgConfig::ARGON2
+    OpenSSL::SSL
+    OpenSSL::Crypto
     Threads::Threads
 )
 target_compile_options(dc24h.eu PRIVATE ${DC24H_WARNING_FLAGS})
@@ -127,6 +147,10 @@ add_executable(dc24h-settings
     src/hash.hpp
     src/user.cpp
     src/user.hpp
+    src/io_limits.cpp
+    src/io_limits.hpp
+    src/tls_transport.cpp
+    src/tls_transport.hpp
     src/hub_settings.cpp
     src/hub_settings.hpp
     src/moderation.cpp
@@ -139,6 +163,8 @@ target_link_libraries(dc24h-settings PRIVATE
     PkgConfig::MARIADB
     PkgConfig::GCRYPT
     PkgConfig::ARGON2
+    OpenSSL::SSL
+    OpenSSL::Crypto
     Threads::Threads
 )
 target_compile_options(dc24h-settings PRIVATE ${DC24H_WARNING_FLAGS})
@@ -212,13 +238,41 @@ if(BUILD_TESTING)
     )
     add_test(NAME active_anti_abuse_controls COMMAND dc24h_anti_abuse_tests)
 
+    add_executable(dc24h_security_transport_tests
+        tests/security_transport_tests.cpp
+        tests/security_transport_tests.hpp
+        src/io_limits.cpp
+        src/io_limits.hpp
+        src/tls_transport.cpp
+        src/tls_transport.hpp
+    )
+    target_include_directories(dc24h_security_transport_tests PRIVATE src tests)
+    target_link_libraries(dc24h_security_transport_tests PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
+    target_compile_options(dc24h_security_transport_tests PRIVATE
+        ${DC24H_WARNING_FLAGS}
+        -UNDEBUG
+    )
+    add_test(NAME tls_and_bounded_io_controls
+             COMMAND dc24h_security_transport_tests)
+
     add_executable(dc24h_config_tests
         tests/config_tests.cpp
         tests/config_tests.hpp
         src/config.cpp
         src/config.hpp
+        src/io_limits.cpp
+        src/io_limits.hpp
+        src/tls_transport.cpp
+        src/tls_transport.hpp
     )
     target_include_directories(dc24h_config_tests PRIVATE src tests)
+    target_link_libraries(dc24h_config_tests PRIVATE
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    )
     target_compile_options(dc24h_config_tests PRIVATE
         ${DC24H_WARNING_FLAGS}
         -UNDEBUG

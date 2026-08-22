@@ -1,6 +1,11 @@
 /*
     server.cpp
 
+    v0.0.12:
+        - serve ADC and TLS 1.3 ADCS through bounded transport objects
+        - enforce tls_only_mode, ReadLineLocal limits and login/idle timeouts
+        - preserve transport identity for duplicated moderation/routing sockets
+
     v0.0.11:
         - reject temporary bans, excessive per-IP sessions and rapid reconnects
         - apply mAuthIP during account admission
@@ -65,6 +70,7 @@
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -104,26 +110,45 @@ Server::Server(const Config& config,
       protocol_(protocol),
       database_(database),
       user_commands_(database),
-      anti_abuse_(config.anti_abuse) {}
+      anti_abuse_(config.anti_abuse) {
+    if (config_.tls.enabled) {
+        tls_context_ = std::make_unique<TlsServerContext>(config_.tls);
+    }
+}
 
 Server::~Server() {
     disconnect_all();
     if (listen_fd_ >= 0) {
         ::close(listen_fd_);
     }
+    if (tls_listen_fd_ >= 0) {
+        ::close(tls_listen_fd_);
+    }
     join_workers();
 }
 
 int Server::run(const std::atomic_bool& stop_requested) {
-    listen_fd_ = create_listener();
-
-    std::cout << "dc24h.eu listening on " << config_.listen_address
-              << ':' << config_.listen_port << '\n';
+    if (!config_.tls.tls_only_mode) {
+        listen_fd_ = create_listener(config_.listen_port);
+        std::cout << "dc24h.eu ADC listening on " << config_.listen_address
+                  << ':' << config_.listen_port << '\n';
+    }
+    if (config_.tls.enabled) {
+        tls_listen_fd_ = create_listener(config_.tls.port);
+        std::cout << "dc24h.eu ADCS listening on " << config_.listen_address
+                  << ':' << config_.tls.port << " minimum="
+                  << tls_context_->minimum_version() << '\n';
+    }
 
     while (!stop_requested.load()) {
         expire_client_policies();
-        pollfd descriptor{listen_fd_, POLLIN, 0};
-        const int poll_result = ::poll(&descriptor, 1, 1000);
+        std::array<pollfd, 2> descriptors{{
+            {listen_fd_,
+             static_cast<short>(listen_fd_ >= 0 ? POLLIN : 0), 0},
+            {tls_listen_fd_,
+             static_cast<short>(tls_listen_fd_ >= 0 ? POLLIN : 0), 0}}};
+        const int poll_result = ::poll(
+            descriptors.data(), descriptors.size(), 1000);
 
         if (poll_result < 0) {
             if (errno == EINTR) continue;
@@ -131,18 +156,42 @@ int Server::run(const std::atomic_bool& stop_requested) {
                 "poll failed: " + std::string(std::strerror(errno)));
         }
         if (poll_result == 0) continue;
-        if ((descriptor.revents & POLLIN) == 0) continue;
+        if ((descriptors[0].revents & POLLIN) != 0) {
+            accept_client(listen_fd_, false);
+        }
+        if ((descriptors[1].revents & POLLIN) != 0) {
+            accept_client(tls_listen_fd_, true);
+        }
+    }
+
+    disconnect_all();
+    join_workers();
+    return 0;
+}
+
+void Server::accept_client(int listener_fd, bool use_tls) {
+        if (listener_fd < 0) return;
 
         sockaddr_in peer{};
         socklen_t peer_length = sizeof(peer);
         const int client_fd =
-            ::accept(listen_fd_,
+            ::accept(listener_fd,
                      reinterpret_cast<sockaddr*>(&peer),
                      &peer_length);
         if (client_fd < 0) {
-            if (errno == EINTR) continue;
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) return;
             std::cerr << "accept failed: " << std::strerror(errno) << '\n';
-            continue;
+            return;
+        }
+
+        std::shared_ptr<SocketTransport> transport;
+        try {
+            transport = std::make_shared<SocketTransport>(
+                client_fd, config_.io_limits);
+        } catch (const std::exception& ex) {
+            std::cerr << "transport setup failed: " << ex.what() << '\n';
+            ::close(client_fd);
+            return;
         }
 
         char address_buffer[INET_ADDRSTRLEN]{};
@@ -163,10 +212,12 @@ int Server::run(const std::atomic_bool& stop_requested) {
                 response += " TL" +
                     std::to_string(denied->retry_after_seconds);
             }
-            send_all(client_fd, response + "\n");
-            ::shutdown(client_fd, SHUT_RDWR);
-            ::close(client_fd);
-            continue;
+            if (!use_tls) {
+                transport->write_all(
+                    response + "\n",
+                    std::chrono::seconds(config_.timeout.General));
+            }
+            return;
         }
 
         try {
@@ -182,30 +233,36 @@ int Server::run(const std::atomic_bool& stop_requested) {
                     moderation_hostname);
             }
             if (blocked.has_value()) {
-                send_all(client_fd, moderation_denial(*blocked));
-                ::shutdown(client_fd, SHUT_RDWR);
-                ::close(client_fd);
+                if (!use_tls) {
+                    transport->write_all(
+                        moderation_denial(*blocked),
+                        std::chrono::seconds(config_.timeout.General));
+                }
                 anti_abuse_.RecordDisconnect(remote_address);
-                continue;
+                return;
             }
         } catch (const std::exception& ex) {
             std::cerr << "moderation admission error: " << ex.what() << '\n';
-            send_all(client_fd, "ISTA 500 Moderation\\scheck\\sunavailable\n");
-            ::shutdown(client_fd, SHUT_RDWR);
-            ::close(client_fd);
+            if (!use_tls) {
+                transport->write_all(
+                    "ISTA 500 Moderation\\scheck\\sunavailable\n",
+                    std::chrono::seconds(config_.timeout.General));
+            }
             anti_abuse_.RecordDisconnect(remote_address);
-            continue;
+            return;
         }
 
         std::string sid;
         {
             std::lock_guard lock(clients_mutex_);
             if (clients_.size() >= config_.max_clients) {
-                send_all(client_fd, "ISTA 211 Hub\\sfull\n");
-                ::shutdown(client_fd, SHUT_RDWR);
-                ::close(client_fd);
+                if (!use_tls) {
+                    transport->write_all(
+                        "ISTA 211 Hub\\sfull\n",
+                        std::chrono::seconds(config_.timeout.General));
+                }
                 anti_abuse_.RecordDisconnect(remote_address);
-                continue;
+                return;
             }
 
             sid = next_sid();
@@ -214,6 +271,10 @@ int Server::run(const std::atomic_bool& stop_requested) {
             client.remote_address = remote_address;
             client.moderation_hostname = moderation_hostname;
             clients_.emplace(client_fd, std::move(client));
+        }
+        {
+            std::lock_guard lock(transports_mutex_);
+            transports_.emplace(client_fd, transport);
         }
 
         try {
@@ -224,15 +285,11 @@ int Server::run(const std::atomic_bool& stop_requested) {
 
         std::lock_guard worker_lock(workers_mutex_);
         workers_.emplace_back(
-            &Server::client_loop, this, client_fd, sid, remote_address);
-    }
-
-    disconnect_all();
-    join_workers();
-    return 0;
+            &Server::client_loop, this, client_fd, sid, remote_address,
+            use_tls, std::move(transport));
 }
 
-int Server::create_listener() const {
+int Server::create_listener(std::uint16_t port) const {
     const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
         throw std::runtime_error(
@@ -251,7 +308,7 @@ int Server::create_listener() const {
 
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_port = htons(config_.listen_port);
+    address.sin_port = htons(port);
 
     if (::inet_pton(AF_INET,
                     config_.listen_address.c_str(),
@@ -280,37 +337,87 @@ int Server::create_listener() const {
 
 void Server::client_loop(int client_fd,
                          std::string sid,
-                         std::string remote_address) {
+                         std::string remote_address,
+                         bool use_tls,
+                         std::shared_ptr<SocketTransport> transport) {
     std::array<char, 8192> buffer{};
-    std::string pending;
-    pending.reserve(8192);
+    BoundedLineReader reader(config_.io_limits.mLineSizeMax);
 
     AdcSession session;
     bool finished = false;
+    auto connection_started = std::chrono::steady_clock::now();
+    auto phase_started = connection_started;
+    auto last_activity = connection_started;
+
+    if (use_tls &&
+        !transport->AcceptTls(
+            *tls_context_,
+            std::chrono::seconds(config_.tls.handshake_timeout_seconds))) {
+        finished = true;
+    }
+    if (!finished && use_tls) {
+        connection_started = std::chrono::steady_clock::now();
+        phase_started = connection_started;
+        last_activity = connection_started;
+    }
 
     while (!finished) {
-        const auto received =
-            ::recv(client_fd, buffer.data(), buffer.size(), 0);
-        if (received == 0) break;
-        if (received < 0) {
-            if (errno == EINTR) continue;
+        const auto now = std::chrono::steady_clock::now();
+        std::uint32_t phase_limit = config_.timeout.General;
+        if (session.state == AdcState::protocol) {
+            phase_limit = config_.timeout.Key;
+        } else if (session.state == AdcState::identify) {
+            phase_limit = config_.timeout.ValidateNick;
+        }
+        if ((session.state != AdcState::normal &&
+             now - connection_started >=
+                 std::chrono::seconds(config_.timeout.Login)) ||
+            (session.state != AdcState::normal &&
+             now - phase_started >= std::chrono::seconds(phase_limit)) ||
+            (session.state == AdcState::normal &&
+             now - last_activity >=
+                 std::chrono::seconds(config_.timeout.General))) {
+            send_all(client_fd, "ISTA 230 Session\\stimeout\n");
             break;
         }
 
-        pending.append(buffer.data(), static_cast<std::size_t>(received));
+        pollfd descriptor{client_fd, POLLIN, 0};
+        const int poll_result = transport->has_pending_input()
+            ? 1
+            : ::poll(&descriptor, 1, 1000);
+        if (poll_result == 0) continue;
+        if (poll_result < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) break;
+        if (!transport->has_pending_input() &&
+            (descriptor.revents & POLLIN) == 0) continue;
 
-        while (true) {
-            const auto newline = pending.find('\n');
-            if (newline == std::string::npos) break;
-
-            std::string line = pending.substr(0, newline);
-            pending.erase(0, newline + 1U);
-
-            if (line.size() > 65535U) {
-                send_all(client_fd, "ISTA 240 Protocol\\sline\\stoo\\slong\n");
-                finished = true;
-                break;
+        const auto received = transport->read_some(
+            buffer.data(), buffer.size());
+        if (received == 0) break;
+        if (received < 0) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;
             }
+            break;
+        }
+        last_activity = std::chrono::steady_clock::now();
+
+        auto read_result = reader.ReadLineLocal(std::string_view(
+            buffer.data(), static_cast<std::size_t>(received)));
+        if (read_result.status == ReadLineStatus::overflow) {
+            send_all(client_fd, "ISTA 240 Protocol\\sline\\stoo\\slong\n");
+            finished = true;
+            break;
+        }
+
+        for (const auto& line : read_result.lines) {
+            const auto previous_state = session.state;
+            const bool is_myinfo =
+                line.size() >= 4U && line.substr(1U, 3U) == "INF";
+            const auto operation_started = std::chrono::steady_clock::now();
 
             const auto action =
                 protocol_.handle_line(line, sid, remote_address, session);
@@ -335,15 +442,21 @@ void Server::client_loop(int client_fd,
                 route_action(client_fd, action);
             }
 
+            if (is_myinfo &&
+                std::chrono::steady_clock::now() - operation_started >=
+                    std::chrono::seconds(config_.timeout.MyINFO)) {
+                send_all(client_fd, "ISTA 230 MyINFO\\stimeout\n");
+                finished = true;
+                break;
+            }
+
             if (action.disconnect) {
                 finished = true;
                 break;
             }
-        }
-
-        if (pending.size() > 65535U) {
-            send_all(client_fd, "ISTA 240 Protocol\\sline\\stoo\\slong\n");
-            finished = true;
+            if (session.state != previous_state) {
+                phase_started = std::chrono::steady_clock::now();
+            }
         }
     }
 
@@ -361,8 +474,11 @@ void Server::client_loop(int client_fd,
         }
     }
 
-    ::shutdown(client_fd, SHUT_RDWR);
-    ::close(client_fd);
+    {
+        std::lock_guard lock(transports_mutex_);
+        transports_.erase(client_fd);
+    }
+    transport->shutdown();
     anti_abuse_.RecordDisconnect(remote_address, clone_fingerprint);
 
     try {
@@ -533,9 +649,12 @@ bool Server::finish_identification(
         current->second.normal = true;
         current->second.policy = std::move(policy);
         if (current->second.policy.password_change_required) {
+            const auto password_timeout = std::min(
+                hub_settings.password_initial_timeout,
+                config_.timeout.Password);
             current->second.password_deadline =
                 static_cast<std::int64_t>(std::time(nullptr)) +
-                static_cast<std::int64_t>(hub_settings.password_initial_timeout);
+                static_cast<std::int64_t>(password_timeout);
         }
     }
     moderation_lock.unlock();
@@ -1749,10 +1868,16 @@ void Server::route_feature(int sender_fd, const AdcAction& action) {
 }
 
 void Server::disconnect_all() {
-    std::lock_guard lock(clients_mutex_);
-    for (const auto& [fd, client] : clients_) {
-        static_cast<void>(client);
-        ::shutdown(fd, SHUT_RDWR);
+    std::vector<std::shared_ptr<SocketTransport>> transports;
+    {
+        std::lock_guard lock(transports_mutex_);
+        for (const auto& [fd, transport] : transports_) {
+            static_cast<void>(fd);
+            transports.push_back(transport);
+        }
+    }
+    for (const auto& transport : transports) {
+        transport->shutdown();
     }
 }
 
@@ -1844,10 +1969,12 @@ void Server::refresh_client_policy(std::string_view username) {
                 if (!client.policy.password_change_required) {
                     client.password_deadline = 0;
                 } else if (client.password_deadline == 0) {
+                    const auto password_timeout = std::min(
+                        settings.password_initial_timeout,
+                        config_.timeout.Password);
                     client.password_deadline =
                         static_cast<std::int64_t>(std::time(nullptr)) +
-                        static_cast<std::int64_t>(
-                            settings.password_initial_timeout);
+                        static_cast<std::int64_t>(password_timeout);
                 }
                 changed_clients.push_back(fd);
             }
@@ -1938,26 +2065,31 @@ std::string Server::next_sid() {
 }
 
 bool Server::send_all(int fd, const std::string& message) {
-    std::lock_guard send_lock(send_mutex_);
-    std::size_t offset = 0;
-    while (offset < message.size()) {
-        const auto sent =
-            ::send(fd,
-                   message.data() + offset,
-                   message.size() - offset,
-                   MSG_NOSIGNAL | MSG_DONTWAIT);
-        if (sent < 0) {
-            if (errno == EINTR) continue;
-            ::shutdown(fd, SHUT_RDWR);
-            return false;
+    std::shared_ptr<SocketTransport> transport;
+    {
+        std::lock_guard lock(transports_mutex_);
+        const auto current = transports_.find(fd);
+        if (current != transports_.end()) {
+            transport = current->second;
+        } else {
+            struct stat requested{};
+            if (::fstat(fd, &requested) != 0) return false;
+            for (const auto& [registered_fd, candidate] : transports_) {
+                struct stat registered{};
+                if (::fstat(registered_fd, &registered) == 0 &&
+                    requested.st_dev == registered.st_dev &&
+                    requested.st_ino == registered.st_ino) {
+                    transport = candidate;
+                    break;
+                }
+            }
+            if (!transport) return false;
         }
-        if (sent == 0) {
-            ::shutdown(fd, SHUT_RDWR);
-            return false;
-        }
-        offset += static_cast<std::size_t>(sent);
     }
-    return true;
+    const bool written = transport->write_all(
+        message, std::chrono::seconds(config_.timeout.General));
+    if (!written) transport->shutdown();
+    return written;
 }
 
 }  // namespace dc24h

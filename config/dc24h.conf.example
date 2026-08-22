@@ -1,5 +1,9 @@
 # dc24h.conf.example
 #
+# v0.0.12:
+#   - add ADCS/TLS 1.3 and optional TLS-only mode
+#   - add hard line/output limits and phase timeouts
+#
 # v0.0.11:
 #   - enable password, IP connection, reconnect and clone protections
 #
@@ -35,5 +39,26 @@ reconnect_min_interval=2
 clone_detect_count=3
 clone_det_tban_time=600
 clone_ip_tban_time=900
+
+# ADCS/TLS. Replace the installation certificate with a trusted certificate.
+tls_enabled=1
+tls_only_mode=0
+tls_port=1512
+tls_certificate=/var/lib/dc24h.eu/dc24h.eu/tls/server.crt
+tls_private_key=/var/lib/dc24h.eu/dc24h.eu/tls/server.key
+tls_min_version=TLS1.3
+tls_handshake_timeout=10
+
+# Input/output memory limits (bytes)
+mLineSizeMax=65535
+max_outbuf_size=262144
+
+# Session phase/idle timeouts (seconds)
+timeout_key=10
+timeout_validate_nick=15
+timeout_login=30
+timeout_myinfo=30
+timeout_password=30
+timeout_general=120
 
 database_config=database.cnf

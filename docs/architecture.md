@@ -1,6 +1,11 @@
 <!--
 architecture.md
 
+v0.0.12:
+  - add native ADCS with configurable TLS minimum and TLS-only operation
+  - add hard line/output ceilings and phase-specific connection timeouts
+  - document certificate deployment and ncdc as a test client only
+
 v0.0.11:
   - adopt Argon2id with read-only legacy verification and automatic upgrade
   - add active IP, reconnect, password-failure and clone protections
@@ -44,15 +49,15 @@ Author: gpt-5.6-sol
 Date: 2026-08-22
 -->
 
-# Architecture — dc24h.eu-v0.0.11
+# Architecture — dc24h.eu-v0.0.12
 
 ## Baseline
 
 `dc24h.eu` is a C++20 Direct Connect hub for Debian 13. It implements the ADC
 1.0.4 BASE/TIGR profile, validates UTF-8, stores persistent state in MariaDB
-`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.11
-retains the protected per-hub home and adds Argon2id password storage plus
-layered connection-abuse controls.
+`utf8mb4`, uses US English / `en_US.UTF-8`, and runs under systemd. v0.0.12
+retains the v0.0.11 authentication/anti-abuse controls and adds native ADCS,
+TLS-only operation, bounded socket input/output and phase-specific deadlines.
 
 ## Runtime flow
 
@@ -64,7 +69,10 @@ layered connection-abuse controls.
    all seven required options, file type and safe permissions. `Database` then
    asks MariaDB Connector/C to read that option file, connects with `utf8mb4`
    and applies idempotent schema updates.
-4. `Server` listens on IPv4 TCP port 1511 by default. `AntiAbuse` rejects a
+4. `Server` listens on IPv4 TCP port 1511 for ADC and, when compiled and
+   configured, port 1512 for ADCS. OpenSSL performs a deadline-bounded TLS
+   handshake before ADC input is parsed. In `tls_only_mode`, port 1511 is not
+   opened. `AntiAbuse` rejects a
    current temporary ban, an over-limit source address or a reconnect inside
    the configured interval before database and DNS admission work. The server
    then checks active address,
@@ -92,6 +100,12 @@ layered connection-abuse controls.
   writes, legacy MD5/PBKDF2 verification and upgrade detection.
 - `src/anti_abuse.cpp` / `src/anti_abuse.hpp`: temporary IP bans, independent
   failure windows, connection/reconnect limits, `mAuthIP` and clone accounting.
+- `src/io_limits.cpp` / `src/io_limits.hpp`: `ReadLineLocal()`, the hard
+  `MAX_MESS_SIZE`/`MAX_SEND_SIZE` ceilings and configurable
+  `mLineSizeMax`/`max_outbuf_size` limits.
+- `src/tls_transport.cpp` / `src/tls_transport.hpp`: OpenSSL server context,
+  `USE_TLS_PROXY`/`USE_FEARTLS_PROXY`, handshake deadlines and one bounded
+  raw-or-encrypted socket abstraction.
 - `src/rbac.cpp` / `src/rbac.hpp`: command permissions, minimum class hierarchy
   and deny-by-default authorization decisions.
 - `src/hub_settings.cpp` / `src/hub_settings.hpp`: canonical policy keys, normalization and nickname checks.
@@ -109,7 +123,7 @@ layered connection-abuse controls.
 - `scripts/install.sh`: creates the hub home, migrates runtime configuration,
   securely creates or reuses protected MariaDB options, validates the staged
   deployment and installs/restarts the service.
-- `src/version.cpp` / `src/version.hpp`: `0.0.11`, release identity, author and date.
+- `src/version.cpp` / `src/version.hpp`: `0.0.12`, release identity, author and date.
 
 Every production and test `*.cpp` has a matching `*.hpp` and vice versa.
 
@@ -123,6 +137,37 @@ the instance home and `scripts/` are `root:dc24h` mode `0750`. `dc24h.conf` and
 `/usr/sbin/nologin`. systemd additionally exposes the home through
 `ReadOnlyPaths`, so the daemon can read but cannot replace its configuration or
 administration script.
+
+The `tls/` directory is also `root:dc24h` mode `0750`; `server.crt` and
+`server.key` are `root:dc24h` mode `0640`. A clean install creates a temporary
+self-signed bootstrap certificate without overwriting an existing pair.
+Operators should replace it atomically with a CA-issued certificate before
+public service. The private key may not be a symlink, world-readable or
+group/world writable.
+
+## Secure and bounded transport
+
+Both listener paths feed the same ADC state machine and support ordinary ADC
+clients such as DC++, EiskaltDC++ and other conforming implementations. `ncdc`
+is only the automated interoperability client; it is not a runtime dependency
+or a client restriction.
+
+The CMake switches `USE_TLS_PROXY` and `USE_FEARTLS_PROXY` expose encrypted
+transport capability. Runtime keys select certificate, private key, ADCS port,
+handshake deadline and minimum `TLS1.2` or `TLS1.3`; the supplied profile uses
+TLS 1.3. Compression, renegotiation and TLS 1.3 early data are disabled.
+
+Input is accumulated only by `ReadLineLocal()`. A logical ADC line longer than
+`mLineSizeMax` is rejected before another append and closes the connection;
+`MAX_MESS_SIZE` is the non-configurable upper ceiling. Every outgoing message
+must fit both `max_outbuf_size` and `MAX_SEND_SIZE`. Synchronous bounded writes
+avoid an unbounded per-client queue.
+
+Timeout keys map to protocol stages: `Key` covers SUP negotiation,
+`ValidateNick` covers INF identity validation, `Login` caps the whole
+pre-NORMAL exchange, `MyINFO` caps INF processing, `Password` caps required
+first-password setup, and `General` caps normal-session idle time and bounded
+writes. TLS handshakes have an independent deadline.
 
 The active runtime file contains `database_config=database.cnf` and no inline
 database credentials. A relative reference must be a basename beside

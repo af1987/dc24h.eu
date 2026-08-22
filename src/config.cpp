@@ -1,6 +1,10 @@
 /*
     config.cpp
 
+    v0.0.12:
+        - parse and validate TLS/ADCS, bounded buffers and phase timeouts
+        - validate certificate/key file boundaries when TLS is enabled
+
     v0.0.11:
         - parse bounded password, IP, reconnect and clone protection settings
 
@@ -56,6 +60,35 @@ T parse_integer(std::string_view text, const std::string& key) {
         throw std::runtime_error("Invalid integer value for " + key);
     }
     return value;
+}
+
+bool parse_boolean(std::string_view text, const std::string& key) {
+    if (text == "0") return false;
+    if (text == "1") return true;
+    throw std::runtime_error(key + " must be 0 or 1");
+}
+
+void validate_tls_file(const std::string& configured,
+                       const std::string& key,
+                       bool private_file) {
+    const std::filesystem::path path(configured);
+    if (!path.is_absolute() || std::filesystem::is_symlink(
+            std::filesystem::symlink_status(path)) ||
+        !std::filesystem::is_regular_file(std::filesystem::status(path))) {
+        throw std::runtime_error(
+            key + " must be an absolute regular non-symlink file");
+    }
+    using perms = std::filesystem::perms;
+    const auto permissions = std::filesystem::status(path).permissions();
+    if ((permissions & (perms::group_write | perms::others_write)) !=
+        perms::none) {
+        throw std::runtime_error(key + " must not be group/world writable");
+    }
+    if (private_file &&
+        (permissions & (perms::others_read | perms::others_exec)) !=
+            perms::none) {
+        throw std::runtime_error("tls_private_key must not be world-readable");
+    }
 }
 
 std::pair<std::string, std::string> parse_assignment(
@@ -223,11 +256,7 @@ Config load_config(const std::string& path) {
         else if (key == "listen_port") config.listen_port = parse_integer<std::uint16_t>(value, key);
         else if (key == "max_clients") config.max_clients = parse_integer<std::size_t>(value, key);
         else if (key == "locale") config.locale = value;
-        else if (key == "dns_lookup") {
-            if (value == "0") config.dns_lookup = false;
-            else if (value == "1") config.dns_lookup = true;
-            else throw std::runtime_error("dns_lookup must be 0 or 1");
-        }
+        else if (key == "dns_lookup") config.dns_lookup = parse_boolean(value, key);
         else if (key == "pwd_tmpban") config.anti_abuse.pwd_tmpban = parse_integer<std::uint32_t>(value, key);
         else if (key == "password_failure_limit") config.anti_abuse.password_failure_limit = parse_integer<std::uint32_t>(value, key);
         else if (key == "password_failure_window") config.anti_abuse.password_failure_window = parse_integer<std::uint32_t>(value, key);
@@ -236,6 +265,21 @@ Config load_config(const std::string& path) {
         else if (key == "clone_detect_count") config.anti_abuse.clone_detect_count = parse_integer<std::size_t>(value, key);
         else if (key == "clone_det_tban_time") config.anti_abuse.clone_det_tban_time = parse_integer<std::uint32_t>(value, key);
         else if (key == "clone_ip_tban_time") config.anti_abuse.clone_ip_tban_time = parse_integer<std::uint32_t>(value, key);
+        else if (key == "tls_enabled") config.tls.enabled = parse_boolean(value, key);
+        else if (key == "tls_only_mode") config.tls.tls_only_mode = parse_boolean(value, key);
+        else if (key == "tls_port") config.tls.port = parse_integer<std::uint16_t>(value, key);
+        else if (key == "tls_certificate") config.tls.certificate = value;
+        else if (key == "tls_private_key") config.tls.private_key = value;
+        else if (key == "tls_min_version") config.tls.minimum_version = value;
+        else if (key == "tls_handshake_timeout") config.tls.handshake_timeout_seconds = parse_integer<std::uint32_t>(value, key);
+        else if (key == "mLineSizeMax") config.io_limits.mLineSizeMax = parse_integer<std::size_t>(value, key);
+        else if (key == "max_outbuf_size") config.io_limits.max_outbuf_size = parse_integer<std::size_t>(value, key);
+        else if (key == "timeout_key") config.timeout.Key = parse_integer<std::uint32_t>(value, key);
+        else if (key == "timeout_validate_nick") config.timeout.ValidateNick = parse_integer<std::uint32_t>(value, key);
+        else if (key == "timeout_login") config.timeout.Login = parse_integer<std::uint32_t>(value, key);
+        else if (key == "timeout_myinfo") config.timeout.MyINFO = parse_integer<std::uint32_t>(value, key);
+        else if (key == "timeout_password") config.timeout.Password = parse_integer<std::uint32_t>(value, key);
+        else if (key == "timeout_general") config.timeout.General = parse_integer<std::uint32_t>(value, key);
         else if (key == "database_config") {
             if (value.empty()) {
                 throw std::runtime_error("database_config must not be empty");
@@ -278,6 +322,35 @@ Config load_config(const std::string& path) {
 
     if (config.listen_port == 0 || config.database_port == 0) {
         throw std::runtime_error("Ports must be in range 1..65535");
+    }
+    std::string tls_error;
+    if (!valid_tls_settings(config.tls, tls_error)) {
+        throw std::runtime_error(tls_error);
+    }
+    if (config.tls.enabled) {
+        if (config.tls.port == config.listen_port && !config.tls.tls_only_mode) {
+            throw std::runtime_error(
+                "tls_port and listen_port must differ unless tls_only_mode=1");
+        }
+        validate_tls_file(config.tls.certificate, "tls_certificate", false);
+        validate_tls_file(config.tls.private_key, "tls_private_key", true);
+    }
+    if (!valid_io_limits(config.io_limits)) {
+        throw std::runtime_error(
+            "mLineSizeMax/max_outbuf_size violate hard I/O limits");
+    }
+    const auto valid_timeout = [](std::uint32_t value) {
+        return value > 0U && value <= 3600U;
+    };
+    if (!valid_timeout(config.timeout.Key) ||
+        !valid_timeout(config.timeout.ValidateNick) ||
+        !valid_timeout(config.timeout.Login) ||
+        !valid_timeout(config.timeout.MyINFO) ||
+        !valid_timeout(config.timeout.Password) ||
+        !valid_timeout(config.timeout.General) ||
+        config.timeout.Login < config.timeout.Key ||
+        config.timeout.General < config.timeout.Login) {
+        throw std::runtime_error("invalid session timeout configuration");
     }
     if (config.max_clients == 0) {
         throw std::runtime_error("max_clients must be greater than zero");

@@ -1,6 +1,10 @@
 <!--
 changelog.md
 
+v0.0.12:
+  - add native TLS 1.3 ADCS and optional TLS-only operation
+  - add bounded input/output and phase-specific timeout controls
+
 v0.0.11:
   - replace new MD5 writes with Argon2id and legacy hash upgrades
   - add active password, IP, reconnect and clone abuse protections
@@ -42,6 +46,47 @@ Date: 2026-08-22
 -->
 
 # Changelog
+
+## dc24h.eu-v0.0.12 — 2026-08-22
+
+Author: `gpt-5.6-sol`
+
+### Added
+
+- Paired `tls_transport.cpp` / `tls_transport.hpp` OpenSSL transport with
+  `USE_TLS_PROXY`, `USE_FEARTLS_PROXY`, configurable certificate/key, minimum
+  TLS version, handshake deadline and ADCS listener.
+- Paired `io_limits.cpp` / `io_limits.hpp` with `ReadLineLocal()`,
+  `MAX_MESS_SIZE`, `MAX_SEND_SIZE`, `mLineSizeMax` and `max_outbuf_size`.
+- `tls_only_mode` and active `Key`, `ValidateNick`, `Login`, `MyINFO`,
+  `Password` and `General` timeout settings.
+- Focused transport/config regression tests, ADR-0016 and release manifest.
+
+### Changed
+
+- Raised runtime, CMake, systemd, documentation and test metadata to `0.0.12`.
+- The installer provisions protected TLS material, preserves an existing pair
+  and migrates all new settings without rotating MariaDB credentials.
+- Plain ADC and encrypted ADCS share one protocol/state implementation.
+
+### Security
+
+- The release profile requires TLS 1.3, disables TLS compression,
+  renegotiation and early data, and places a finite deadline on handshakes.
+- Oversize lines close the connection before unbounded accumulation; output
+  writes are size- and time-bounded.
+- TLS-only mode removes the plaintext listener when enabled.
+
+### Validation
+
+- Warnings-as-errors Debian 13 Release build and CTest passed 10/10 locally.
+- Shell syntax and ShellCheck passed. Repeated installer execution preserved
+  credentials and left 30 settings plus the systemd unit healthy.
+- TLS 1.3 succeeded, TLS 1.2 was rejected, TLS-only removed plaintext 1511,
+  oversize input and SUP timeout closed correctly, and the normal policy was
+  restored.
+- Real ncdc completed ADC and ADCS echo plus automatic post-restart reconnect;
+  ncdc remains a test-only client.
 
 ## dc24h.eu-v0.0.11 — 2026-08-22
 
